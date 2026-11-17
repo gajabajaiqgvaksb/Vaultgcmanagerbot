@@ -42,6 +42,7 @@ export class ModerationPipeline {
     if (!user || user.is_bot) return { action: "ignored" };
 
     this.store.ensureGroup(chatId, message.chat.title ?? "");
+    if (!this.store.isActive(chatId)) return { action: "inactive" };
     const settings = this.store.getSettings(chatId);
 
     // Group admins and bot owners are never moderated.

@@ -2,6 +2,11 @@
 // Stored as JSON in the groups table; any missing key falls back to the default.
 
 export const DEFAULT_SETTINGS = Object.freeze({
+  // Set by a super admin. Groups stay inactive (no moderation, no setup)
+  // until activated. Subscriptions will later decide this instead.
+  subscription: {
+    active: false,
+  },
   links: {
     enabled: true,
     allowTelegram: false, // t.me / telegram.me links

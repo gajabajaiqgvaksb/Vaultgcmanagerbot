@@ -3,7 +3,7 @@
 
 import { TelegramError } from "./telegram.js";
 import { FULL_PERMISSIONS, NO_PERMISSIONS } from "./enforce.js";
-import { esc, mention, parseDuration, parseUserRef } from "./util.js";
+import { esc, mention, parseDuration, parseUserRef, SUBSCRIPTION_SOON } from "./util.js";
 
 const MAX_PURGE = 100;
 
@@ -35,8 +35,8 @@ export class Commands {
     if (!handler) return false;
 
     try {
-      if (!PUBLIC_COMMANDS.has(name) && !(await this.permissions.isGroupAdmin(message.chat.id, message.from.id))) {
-        await this.reply(message, "Only group admins can use this command.");
+      if (!PUBLIC_COMMANDS.has(name) && !this.permissions.canManageGroup(message.chat.id, message.from.id)) {
+        await this.reply(message, SUBSCRIPTION_SOON);
         return true;
       }
       await handler(message, args);
@@ -62,6 +62,8 @@ export class Commands {
     return {
       help: (m) => this.reply(m, HELP_TEXT),
       panel: (m) => this.openPanel(m),
+      activate: (m) => this.setActive(m, true),
+      deactivate: (m) => this.setActive(m, false),
       ban: (m, a) => this.targetAction(m, a, "ban"),
       unban: (m, a) => this.targetAction(m, a, "unban"),
       kick: (m, a) => this.targetAction(m, a, "kick"),
@@ -131,6 +133,13 @@ export class Commands {
   }
 
   // ---- command implementations ----
+
+  async setActive(message, active) {
+    this.store.ensureGroup(message.chat.id, message.chat.title ?? "");
+    this.store.setActive(message.chat.id, active);
+    this.store.log(message.chat.id, active ? "activate" : "deactivate", { actorId: message.from.id });
+    await this.reply(message, active ? "Group activated. Send /panel to configure it." : "Group deactivated. Moderation is off.");
+  }
 
   async openPanel(message) {
     const view = this.panel.render(message.chat.id, "home");

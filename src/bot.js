@@ -9,7 +9,7 @@ import { ModerationPipeline } from "./pipeline.js";
 import { Commands } from "./commands.js";
 import { Panel, PendingInputs } from "./panel.js";
 import { renderWelcome, welcomeKeyboard } from "./welcome.js";
-import { esc, mention } from "./util.js";
+import { esc, mention, SUBSCRIPTION_SOON } from "./util.js";
 
 export function createBot(config, { fetchImpl, dbPath } = {}) {
   const store = openDatabase(dbPath ?? config.dbPath);
@@ -60,17 +60,20 @@ export class Bot {
     if (!added) return;
 
     this.store.ensureGroup(chat.id, chat.title ?? "");
-    this.store.log(chat.id, "bot_added", { actorId: update.from?.id ?? null });
-    const rights = await this.permissions.botRights(chat.id);
-    if (!rights) {
-      await this.client.sendMessage(
-        chat.id,
-        "Thanks for adding me. To work, I need admin rights: delete messages, restrict members, pin messages and invite users. " +
-          "Then send /panel to configure the group.",
-      );
-    } else {
-      await this.client.sendMessage(chat.id, "Ready. Send /panel to configure moderation.");
+    const adder = update.from;
+    this.store.log(chat.id, "bot_added", { actorId: adder?.id ?? null });
+
+    // Only a super admin who adds the bot activates the group.
+    if (!adder || !this.permissions.canManageGroup(chat.id, adder.id)) {
+      return this.client.sendMessage(chat.id, SUBSCRIPTION_SOON);
     }
+
+    this.store.setActive(chat.id, true);
+    const rights = await this.permissions.botRights(chat.id);
+    const rightsNote = rights
+      ? "Ready."
+      : "To moderate, I need admin rights: delete messages, restrict members, pin messages and invite users.";
+    await this.client.sendMessage(chat.id, `Group activated. ${rightsNote} Send /panel to configure.`);
   }
 
   async onCallback(query) {
@@ -127,8 +130,8 @@ export class Bot {
       return;
     }
 
-    // An admin answering a pending prompt (e.g. "send the banned word").
-    if (message.from && (await this.permissions.isGroupAdmin(message.chat.id, message.from.id))) {
+    // A super admin answering a pending prompt (e.g. "send the banned word").
+    if (message.from && this.permissions.canManageGroup(message.chat.id, message.from.id)) {
       const confirmation = await this.panel.handleInput(message);
       if (confirmation !== null) {
         await this.client.sendMessage(message.chat.id, confirmation, {
@@ -156,6 +159,7 @@ export class Bot {
 
   async welcome(message) {
     const chatId = message.chat.id;
+    if (!this.store.isActive(chatId)) return;
     const settings = this.store.getSettings(chatId);
     if (!settings.welcome.enabled) return;
     const group = this.store.getGroup(chatId);

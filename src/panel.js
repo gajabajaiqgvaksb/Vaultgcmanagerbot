@@ -4,7 +4,7 @@
 //   "i" = ask for text input, "x" = execute (confirm), code = field key.
 
 import { DEFAULT_SETTINGS, getPath, setPath, toggle } from "./settings.js";
-import { esc, parseChatRef } from "./util.js";
+import { esc, parseChatRef, SUBSCRIPTION_SOON } from "./util.js";
 import { MAX_WELCOME_LENGTH, parseButtons } from "./welcome.js";
 
 const INPUT_TTL_MS = 5 * 60_000;
@@ -102,8 +102,8 @@ export class Panel {
     const chatId = Number(chatStr);
     const actor = query.from;
 
-    if (!(await this.permissions.isGroupAdmin(chatId, actor.id))) {
-      return { alert: "Only group admins can use this panel." };
+    if (!this.permissions.canManageGroup(chatId, actor.id)) {
+      return { alert: SUBSCRIPTION_SOON };
     }
 
     if (op === "g") return { screen };

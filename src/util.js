@@ -1,5 +1,8 @@
 // Small shared helpers.
 
+export const SUBSCRIPTION_SOON =
+  "Subscription coming soon for normal users. Right now only super admins can set up and manage this group.";
+
 // Escape text for Telegram's HTML parse mode.
 export function esc(text = "") {
   return String(text)

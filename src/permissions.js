@@ -17,6 +17,13 @@ export class PermissionService {
     return this.owners.has(userId);
   }
 
+  // Who may set up and manage a group (panel, admin commands, activation).
+  // Right now only super admins. When subscriptions launch, change this one
+  // function to also allow paying group owners.
+  canManageGroup(chatId, userId) {
+    return this.isOwner(userId);
+  }
+
   async isGroupAdmin(chatId, userId) {
     if (this.isOwner(userId)) return true;
     const key = `${chatId}:${userId}`;

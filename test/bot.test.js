@@ -2,9 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBot } from "../src/bot.js";
+import { SUBSCRIPTION_SOON } from "../src/util.js";
 
 const BOT_ID = 999;
-const ADMIN = 1;
+const SUPER = 1; // super admin (OWNER_IDS)
 const SPAMMER = 2;
 const CHANNEL = "@news_chan";
 
@@ -24,7 +25,7 @@ function fakeTelegram({ memberStatus = {} } = {}) {
         if (uid === BOT_ID) {
           return ok({ status: "administrator", can_delete_messages: true, can_restrict_members: true, can_pin_messages: true, can_promote_members: true });
         }
-        if (uid === ADMIN) return ok({ status: "administrator", user: { id: ADMIN } });
+        if (uid === SUPER) return ok({ status: "administrator", user: { id: SUPER } });
         if (params.chat_id === CHANNEL) {
           const joined = memberStatus[uid] ?? false;
           return ok({ status: joined ? "member" : "left", user: { id: uid } });
@@ -40,9 +41,13 @@ function fakeTelegram({ memberStatus = {} } = {}) {
   return { fetchImpl, calls };
 }
 
-function makeBot(tg) {
-  const config = { token: "123:test", ownerIds: [], pollTimeoutSec: 1, apiBase: "https://api.telegram.org" };
-  return createBot(config, { fetchImpl: tg.fetchImpl, dbPath: ":memory:" });
+// A bot whose only super admin is SUPER. The group is activated unless told otherwise.
+function makeBot(tg, { activate = true } = {}) {
+  const config = { token: "123:test", ownerIds: [SUPER], pollTimeoutSec: 1, apiBase: "https://api.telegram.org", mode: "polling" };
+  const bot = createBot(config, { fetchImpl: tg.fetchImpl, dbPath: ":memory:" });
+  bot.store.ensureGroup(group.id, group.title);
+  if (activate) bot.store.setActive(group.id, true);
+  return bot;
 }
 
 const group = { id: -1001, type: "supergroup", title: "Test Group" };
@@ -50,36 +55,102 @@ const msg = (from, text, extra = {}) => ({
   update_id: Math.floor(Math.random() * 1e9),
   message: { message_id: 10, chat: group, from, text, ...extra },
 });
+const lastSent = (tg) => tg.calls.filter((c) => c.method === "sendMessage").pop();
+const lastAnswer = (tg) => tg.calls.filter((c) => c.method === "answerCallbackQuery").pop();
 
 test("regular user posting a banned word gets the message deleted and a warning", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
 
   await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Spam" }, "Quick FREE MONEY here"));
 
   const del = tg.calls.find((c) => c.method === "deleteMessage");
   assert.ok(del, "message was deleted");
   assert.equal(del.params.message_id, 10);
-  const warning = tg.calls.filter((c) => c.method === "sendMessage").pop();
-  assert.match(warning.params.text, /prohibited word/);
+  assert.match(lastSent(tg).params.text, /prohibited word/);
   assert.equal(bot.store.getWarnings(group.id, SPAMMER), 1);
 });
 
-test("group admins are never moderated", async () => {
+test("moderation is off in groups that are not activated", async () => {
   const tg = fakeTelegram();
-  const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
+  const bot = makeBot(tg, { activate: false });
 
-  await bot.handleUpdate(msg({ id: ADMIN, first_name: "Boss" }, "free money everyone"));
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Spam" }, "Quick FREE MONEY here"));
 
   assert.equal(tg.calls.some((c) => c.method === "deleteMessage"), false);
+});
+
+test("super admins are never moderated", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "free money everyone"));
+
+  assert.equal(tg.calls.some((c) => c.method === "deleteMessage"), false);
+});
+
+test("adding the bot as a normal user leaves the group inactive and says subscription coming soon", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg, { activate: false });
+
+  await bot.handleUpdate({
+    update_id: 10,
+    my_chat_member: {
+      chat: group,
+      from: { id: SPAMMER, first_name: "Normal" },
+      new_chat_member: { status: "administrator" },
+    },
+  });
+
+  assert.equal(bot.store.isActive(group.id), false);
+  assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
+});
+
+test("adding the bot as a super admin activates the group", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg, { activate: false });
+
+  await bot.handleUpdate({
+    update_id: 11,
+    my_chat_member: {
+      chat: group,
+      from: { id: SUPER, first_name: "Super" },
+      new_chat_member: { status: "administrator" },
+    },
+  });
+
+  assert.equal(bot.store.isActive(group.id), true);
+  assert.match(lastSent(tg).params.text, /Group activated/);
+});
+
+test("normal group admins cannot use admin commands; they get the subscription message", async () => {
+  const tg = fakeTelegram();
+  const groupAdmin = 3;
+  // This user is a Telegram admin of the group, but not a super admin.
+  const original = tg.fetchImpl;
+  const fetchImpl = async (url, opts) => {
+    const params = JSON.parse(opts.body);
+    if (url.endsWith("/getChatMember") && params.user_id === groupAdmin) {
+      return { status: 200, json: async () => ({ ok: true, result: { status: "administrator", user: { id: groupAdmin } } }) };
+    }
+    return original(url, opts);
+  };
+  const bot = createBot(
+    { token: "123:test", ownerIds: [SUPER], pollTimeoutSec: 1, apiBase: "https://api.telegram.org", mode: "polling" },
+    { fetchImpl, dbPath: ":memory:" },
+  );
+  bot.store.ensureGroup(group.id, group.title);
+  bot.store.setActive(group.id, true);
+
+  await bot.handleUpdate(msg({ id: groupAdmin, first_name: "GroupAdmin" }, "/lock"));
+
+  assert.equal(tg.calls.some((c) => c.method === "setChatPermissions"), false);
+  assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
 });
 
 test("force subscribe blocks an unsubscribed member and shows the gate buttons", async () => {
   const tg = fakeTelegram({ memberStatus: { [SPAMMER]: false } });
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
   const s = bot.store.getSettings(group.id);
   s.forceSubscribe = { enabled: true, channel: CHANNEL };
   bot.store.saveSettings(group.id, s);
@@ -87,8 +158,7 @@ test("force subscribe blocks an unsubscribed member and shows the gate buttons",
   await bot.handleUpdate(msg({ id: SPAMMER, first_name: "New" }, "hi all"));
 
   assert.ok(tg.calls.some((c) => c.method === "deleteMessage"), "unsubscribed message deleted");
-  const gate = tg.calls.filter((c) => c.method === "sendMessage").pop();
-  const buttons = gate.params.reply_markup.inline_keyboard.flat();
+  const buttons = lastSent(tg).params.reply_markup.inline_keyboard.flat();
   assert.ok(buttons.some((b) => b.url === "https://t.me/news_chan"), "JOIN CHANNEL button");
   assert.ok(buttons.some((b) => b.callback_data === `fs:check:${SPAMMER}`), "I SUBSCRIBED button");
 });
@@ -96,7 +166,6 @@ test("force subscribe blocks an unsubscribed member and shows the gate buttons",
 test("I SUBSCRIBED is rejected while the user has not joined, and only the target may press it", async () => {
   const tg = fakeTelegram({ memberStatus: { [SPAMMER]: false } });
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
   const s = bot.store.getSettings(group.id);
   s.forceSubscribe = { enabled: true, channel: CHANNEL };
   bot.store.saveSettings(group.id, s);
@@ -107,19 +176,16 @@ test("I SUBSCRIBED is rejected while the user has not joined, and only the targe
   });
 
   await bot.handleUpdate(press({ id: 77 }));
-  const wrong = tg.calls.filter((c) => c.method === "answerCallbackQuery").pop();
-  assert.match(wrong.params.text, /sent to/);
-  assert.equal(wrong.params.show_alert, true);
+  assert.match(lastAnswer(tg).params.text, /sent to/);
+  assert.equal(lastAnswer(tg).params.show_alert, true);
 
   await bot.handleUpdate(press({ id: SPAMMER }));
-  const notJoined = tg.calls.filter((c) => c.method === "answerCallbackQuery").pop();
-  assert.match(notJoined.params.text, /not joined/);
+  assert.match(lastAnswer(tg).params.text, /not joined/);
 });
 
 test("I SUBSCRIBED succeeds once Telegram confirms membership", async () => {
   const tg = fakeTelegram({ memberStatus: { [SPAMMER]: true } });
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
   const s = bot.store.getSettings(group.id);
   s.forceSubscribe = { enabled: true, channel: CHANNEL };
   bot.store.saveSettings(group.id, s);
@@ -128,15 +194,13 @@ test("I SUBSCRIBED succeeds once Telegram confirms membership", async () => {
     update_id: 2,
     callback_query: { id: "cb2", from: { id: SPAMMER }, data: `fs:check:${SPAMMER}`, message: { chat: group, message_id: 3 } },
   });
-  const ans = tg.calls.filter((c) => c.method === "answerCallbackQuery").pop();
-  assert.match(ans.params.text, /confirmed/);
-  assert.equal(ans.params.show_alert, false);
+  assert.match(lastAnswer(tg).params.text, /confirmed/);
+  assert.equal(lastAnswer(tg).params.show_alert, false);
 });
 
-test("non-admins cannot operate the panel", async () => {
+test("non-super-admins cannot operate the panel; they see the subscription message", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
 
   await bot.handleUpdate({
     update_id: 3,
@@ -148,21 +212,19 @@ test("non-admins cannot operate the panel", async () => {
     },
   });
 
-  const ans = tg.calls.filter((c) => c.method === "answerCallbackQuery").pop();
-  assert.match(ans.params.text, /Only group admins/);
+  assert.equal(lastAnswer(tg).params.text, SUBSCRIPTION_SOON);
   assert.equal(bot.store.getSettings(group.id).flood.enabled, true, "setting untouched");
 });
 
-test("an admin toggles a setting from the panel and the change persists", async () => {
+test("a super admin toggles a setting from the panel and the change persists", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
 
   await bot.handleUpdate({
     update_id: 4,
     callback_query: {
       id: "cb4",
-      from: { id: ADMIN },
+      from: { id: SUPER },
       data: `pn:${group.id}:flood:t:fl`,
       message: { chat: group, message_id: 4 },
     },
@@ -172,13 +234,12 @@ test("an admin toggles a setting from the panel and the change persists", async 
   assert.ok(tg.calls.some((c) => c.method === "editMessageText"), "panel re-rendered in place");
 });
 
-test("a banned word typed by an admin during a prompt is saved, not moderated", async () => {
+test("a banned word typed by a super admin during a prompt is saved, not moderated", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
-  bot.inputs.set(group.id, ADMIN, "ai");
+  bot.inputs.set(group.id, SUPER, "ai");
 
-  await bot.handleUpdate(msg({ id: ADMIN, first_name: "Boss" }, "casino royale"));
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "casino royale"));
 
   assert.deepEqual(bot.store.listWords(group.id), ["casino royale"]);
   assert.equal(tg.calls.some((c) => c.method === "deleteMessage"), false);
@@ -187,23 +248,33 @@ test("a banned word typed by an admin during a prompt is saved, not moderated", 
 test("/rules is available to ordinary members", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
   bot.store.setRules(group.id, "Be kind.");
 
   await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/rules"));
 
-  const reply = tg.calls.filter((c) => c.method === "sendMessage").pop();
-  assert.match(reply.params.text, /Be kind\./);
+  assert.match(lastSent(tg).params.text, /Be kind\./);
 });
 
 test("admin-only commands are refused for ordinary members", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.store.ensureGroup(group.id, group.title);
 
   await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/lock"));
 
   assert.equal(tg.calls.some((c) => c.method === "setChatPermissions"), false);
-  const reply = tg.calls.filter((c) => c.method === "sendMessage").pop();
-  assert.match(reply.params.text, /Only group admins/);
+  assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
+});
+
+test("/activate and /deactivate work only for super admins", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg, { activate: false });
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/activate"));
+  assert.equal(bot.store.isActive(group.id), false);
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Super" }, "/activate"));
+  assert.equal(bot.store.isActive(group.id), true);
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Super" }, "/deactivate"));
+  assert.equal(bot.store.isActive(group.id), false);
 });

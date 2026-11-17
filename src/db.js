@@ -115,6 +115,16 @@ export class Store {
     return this.getGroup(chatId)?.settings ?? structuredClone(DEFAULT_SETTINGS);
   }
 
+  isActive(chatId) {
+    return this.getSettings(chatId).subscription.active === true;
+  }
+
+  setActive(chatId, active) {
+    const s = this.getSettings(chatId);
+    s.subscription.active = Boolean(active);
+    this.saveSettings(chatId, s);
+  }
+
   saveSettings(chatId, settings) {
     this.stmts.updateSettings.run(JSON.stringify(settings), chatId);
   }
