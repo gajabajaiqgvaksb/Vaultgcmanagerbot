@@ -31,8 +31,10 @@ export function isEmojiSlot(key) {
 // HTML for a slot: a premium emoji tag if the admin set one, else the default.
 export function emojiHtml(slot, mapping = {}) {
   const def = EMOJI_SLOTS[slot]?.fallback ?? "";
-  const id = mapping?.[slot];
-  return id ? `<tg-emoji emoji-id="${id}">${def}</tg-emoji>` : def;
+  const value = mapping?.[slot];
+  if (!value) return def;
+  // Digits are a premium custom emoji id; anything else is a normal emoji.
+  return /^\d+$/.test(value) ? `<tg-emoji emoji-id="${value}">${def}</tg-emoji>` : value;
 }
 
 // Plain-text version, for places that cannot carry HTML (buttons).

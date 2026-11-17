@@ -46,9 +46,13 @@ test("emojiHtml uses the premium tag when a slot is mapped, otherwise the defaul
   assert.equal(emojiPlain("warn"), EMOJI_SLOTS.warn.fallback);
 });
 
-test("settings keep only valid numeric emoji ids", () => {
-  const s = mergeSettings({ emoji: { ok: "5368324170671202286", off: "abc", warn: "12" } });
-  assert.deepEqual(s.emoji, { ok: "5368324170671202286" });
+test("settings keep premium ids and normal emoji, drop junk", () => {
+  const s = mergeSettings({ emoji: { ok: "5368324170671202286", off: "🔥", warn: "12", link: "abc" } });
+  assert.deepEqual(s.emoji, { ok: "5368324170671202286", off: "🔥" });
+});
+
+test("a normal emoji set for a slot renders as plain text", () => {
+  assert.equal(emojiHtml("off", { off: "🔥" }), "🔥");
 });
 
 test("welcome text saved from a premium emoji message renders with the premium tag", () => {
@@ -70,8 +74,8 @@ test("admin sets a premium emoji for a slot from the panel; a normal emoji is re
   const press = await panel.handleCallback({ from: { id: 1 }, data: "pn:-7:emoji:i:e_ok" });
   assert.match(press.prompt, /premium/);
 
-  const rejected = await panel.handleInput({ chat: { id: -7 }, from: { id: 1 }, text: "✅", entities: [] });
-  assert.match(rejected, /not a premium emoji/);
+  const rejected = await panel.handleInput({ chat: { id: -7 }, from: { id: 1 }, text: "hello", entities: [] });
+  assert.match(rejected, /Send an emoji/);
   // The prompt is consumed by the first message, so re-arm for the real test.
   inputs.set(-7, 1, "e_ok");
 
@@ -83,6 +87,12 @@ test("admin sets a premium emoji for a slot from the panel; a normal emoji is re
   });
   assert.match(accepted, /now uses your premium emoji/);
   assert.equal(store.getSettings(-7).emoji.ok, "5368324170671202286");
+
+  // A normal emoji is accepted too.
+  inputs.set(-7, 1, "e_off");
+  const normal = await panel.handleInput({ chat: { id: -7 }, from: { id: 1 }, text: "🔥", entities: [] });
+  assert.match(normal, /now uses/);
+  assert.equal(store.getSettings(-7).emoji.off, "🔥");
 
   await panel.handleCallback({ from: { id: 1 }, data: "pn:-7:emoji:x:ce_ok" });
   assert.equal(store.getSettings(-7).emoji.ok, undefined);

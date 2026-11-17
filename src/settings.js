@@ -79,11 +79,14 @@ export function mergeSettings(partial = {}) {
   };
   walk(out, partial);
 
-  // The emoji map has dynamic keys: keep only valid numeric custom emoji ids.
+  // The emoji map has dynamic keys: keep only valid premium ids or emoji characters.
   out.emoji = {};
   if (isObj(partial.emoji)) {
     for (const [slot, id] of Object.entries(partial.emoji)) {
-      if (typeof id === "string" && /^\d{5,30}$/.test(id)) out.emoji[slot] = id;
+      // Either a premium custom emoji id (digits) or a normal emoji character.
+      if (typeof id !== "string") continue;
+      if (/^\d{5,30}$/.test(id)) out.emoji[slot] = id;
+      else if (id.length <= 16 && /\p{Extended_Pictographic}/u.test(id)) out.emoji[slot] = id;
     }
   }
   return out;

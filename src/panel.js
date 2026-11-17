@@ -9,7 +9,7 @@ import { entitiesToHtml, firstCustomEmojiId } from "./entities.js";
 import { EMOJI_SLOTS, EMOJI_SLOT_KEYS, isEmojiSlot, emojiHtml } from "./emoji.js";
 import { MAX_WELCOME_LENGTH, parseButtons } from "./welcome.js";
 
-const INPUT_TTL_MS = 5 * 60_000;
+const INPUT_TTL_MS = 10 * 60_000;
 
 // Boolean fields toggled directly from buttons.
 const BOOL = {
@@ -55,12 +55,18 @@ const INPUT = {
 const SCREENS = ["home", "general", "antispam", "links", "words", "welcome", "forcesub",
   "warnings", "duplicates", "flood", "rules", "logs", "stats", "emoji", "reset"];
 
+// First emoji character in a text, or null.
+function firstEmojiChar(text = "") {
+  const m = text.match(/\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*/u);
+  return m ? m[0] : null;
+}
+
 // Prompt for a premium emoji slot, e.g. code "e_ok".
 function emojiPromptFor(code) {
   if (!code.startsWith("e_")) return null;
   const slot = code.slice(2);
   if (!isEmojiSlot(slot)) return null;
-  return `Send a premium (custom) emoji to use for ${EMOJI_SLOTS[slot].label}. Send /cancel to abort.`;
+  return `Send an emoji for ${EMOJI_SLOTS[slot].label}: a premium emoji (needs Telegram Premium) or a normal one. Send /cancel to abort.`;
 }
 
 export class PendingInputs {
@@ -190,13 +196,19 @@ export class Panel {
 
     if (code.startsWith("e_")) {
       const slot = code.slice(2);
+      // Premium emoji wins; a normal emoji is saved as-is (no premium tag).
       const id = firstCustomEmojiId(message.entities);
-      if (!id) return "That is not a premium emoji. Send a premium (custom) emoji, or /cancel.";
+      const plain = firstEmojiChar(text);
+      if (!id && !plain) {
+        return "Send an emoji (premium or normal), or /cancel. Premium emojis need a Telegram Premium account to send.";
+      }
       const s = this.store.getSettings(chatId);
-      s.emoji[slot] = id;
+      s.emoji[slot] = id ?? plain;
       this.store.saveSettings(chatId, s);
       this.store.log(chatId, "setting", { actorId: userId, detail: `emoji.${slot}` });
-      return `${EMOJI_SLOTS[slot].label} now uses your premium emoji.`;
+      return id
+        ? `${EMOJI_SLOTS[slot].label} now uses your premium emoji.`
+        : `${EMOJI_SLOTS[slot].label} now uses ${esc(plain)}.`;
     }
 
     switch (code) {
