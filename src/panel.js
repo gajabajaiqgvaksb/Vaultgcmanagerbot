@@ -5,6 +5,8 @@
 
 import { DEFAULT_SETTINGS, getPath, setPath, toggle } from "./settings.js";
 import { esc, parseChatRef, SUBSCRIPTION_SOON } from "./util.js";
+import { entitiesToHtml, firstCustomEmojiId } from "./entities.js";
+import { EMOJI_SLOTS, EMOJI_SLOT_KEYS, isEmojiSlot, emojiHtml } from "./emoji.js";
 import { MAX_WELCOME_LENGTH, parseButtons } from "./welcome.js";
 
 const INPUT_TTL_MS = 5 * 60_000;
@@ -51,7 +53,15 @@ const INPUT = {
 };
 
 const SCREENS = ["home", "general", "antispam", "links", "words", "welcome", "forcesub",
-  "warnings", "duplicates", "flood", "rules", "logs", "stats", "reset"];
+  "warnings", "duplicates", "flood", "rules", "logs", "stats", "emoji", "reset"];
+
+// Prompt for a premium emoji slot, e.g. code "e_ok".
+function emojiPromptFor(code) {
+  if (!code.startsWith("e_")) return null;
+  const slot = code.slice(2);
+  if (!isEmojiSlot(slot)) return null;
+  return `Send a premium (custom) emoji to use for ${EMOJI_SLOTS[slot].label}. Send /cancel to abort.`;
+}
 
 export class PendingInputs {
   constructor(now = () => Date.now()) {
@@ -92,7 +102,7 @@ export class Panel {
       ? []
       : [[{ text: "⬅ Back", callback_data: cb(chatId, "home", "g") }]];
     return {
-      text: `<b>⚙ Admin panel</b> — ${title}\n${text}`,
+      text: `<b>${emojiHtml("gear", s.emoji)} Admin panel</b> — ${title}\n${text}`,
       reply_markup: { inline_keyboard: [...rows, ...nav] },
     };
   }
@@ -132,9 +142,20 @@ export class Panel {
     }
 
     if (op === "i") {
-      if (!INPUT[code]) return { alert: "Unknown input." };
+      const prompt = INPUT[code] ?? emojiPromptFor(code);
+      if (!prompt) return { alert: "Unknown input." };
       this.inputs.set(chatId, actor.id, code);
-      return { prompt: INPUT[code] };
+      return { prompt };
+    }
+
+    if (op === "x" && code?.startsWith("ce_")) {
+      const slot = code.slice(3);
+      if (!isEmojiSlot(slot)) return { alert: "Unknown emoji slot." };
+      const s = this.store.getSettings(chatId);
+      delete s.emoji[slot];
+      this.store.saveSettings(chatId, s);
+      this.store.log(chatId, "setting", { actorId: actor.id, detail: `emoji.${slot} removed` });
+      return { screen: "emoji", alert: `${EMOJI_SLOTS[slot].label} reset to default.` };
     }
 
     if (op === "x") {
@@ -167,6 +188,17 @@ export class Panel {
       return "Empty input ignored. Open the panel and try again.";
     }
 
+    if (code.startsWith("e_")) {
+      const slot = code.slice(2);
+      const id = firstCustomEmojiId(message.entities);
+      if (!id) return "That is not a premium emoji. Send a premium (custom) emoji, or /cancel.";
+      const s = this.store.getSettings(chatId);
+      s.emoji[slot] = id;
+      this.store.saveSettings(chatId, s);
+      this.store.log(chatId, "setting", { actorId: userId, detail: `emoji.${slot}` });
+      return `${EMOJI_SLOTS[slot].label} now uses your premium emoji.`;
+    }
+
     switch (code) {
       case "ai": {
         const word = text.toLowerCase();
@@ -181,9 +213,11 @@ export class Panel {
         return removed ? `Removed: <code>${esc(text)}</code>` : "That word is not in the custom list.";
       }
       case "wt": {
-        if (text.length > MAX_WELCOME_LENGTH) return `Welcome text must be ${MAX_WELCOME_LENGTH} characters or fewer.`;
+        // Keep formatting and premium emojis: store the message as Telegram HTML.
+        const raw = message.text ?? "";
+        if (raw.length > MAX_WELCOME_LENGTH) return `Welcome text must be ${MAX_WELCOME_LENGTH} characters or fewer.`;
         const s = this.store.getSettings(chatId);
-        s.welcome.text = text;
+        s.welcome.text = entitiesToHtml(raw, message.entities).trim();
         this.store.saveSettings(chatId, s);
         this.store.log(chatId, "setting", { actorId: userId, detail: "welcome.text" });
         return "Welcome text updated.";
@@ -248,7 +282,7 @@ const SCREENS_RENDER = {
       [navBtn(chatId, "warnings", "⚠ Warnings"), navBtn(chatId, "duplicates", "♻ Duplicates")],
       [navBtn(chatId, "flood", "🌊 Flood"), navBtn(chatId, "rules", "📜 Group rules")],
       [navBtn(chatId, "logs", "🗒 Moderation logs"), navBtn(chatId, "stats", "📊 Statistics")],
-      [navBtn(chatId, "reset", "♲ Reset settings")],
+      [navBtn(chatId, "emoji", "💎 Premium emoji"), navBtn(chatId, "reset", "♲ Reset settings")],
     ],
   }),
 
@@ -293,7 +327,7 @@ const SCREENS_RENDER = {
   },
 
   welcome: ({ s, chatId }) => ({
-    text: `Welcome: ${onOff(s.welcome.enabled)}\n\n<i>Preview:</i>\n${esc(s.welcome.text)}`,
+    text: `Welcome: ${onOff(s.welcome.enabled)}\n\n<i>Preview:</i>\n${s.welcome.text}`,
     rows: [
       [boolBtn(chatId, "welcome", "Welcome messages", "wc", s.welcome.enabled)],
       [inputBtn(chatId, "welcome", "✏ Edit text", "wt"), inputBtn(chatId, "welcome", "🔘 Edit buttons", "wb")],
@@ -357,6 +391,25 @@ const SCREENS_RENDER = {
     return {
       text: `Admins known: ${store.listAdmins(chatId).length}\nCustom words: ${store.listWords(chatId).length}\n\n${lines}`,
       rows: [],
+    };
+  },
+
+  emoji: ({ s, chatId }) => {
+    const lines = EMOJI_SLOT_KEYS.map((k) =>
+      `${emojiHtml(k, s.emoji)} ${esc(EMOJI_SLOTS[k].label)} — ${s.emoji[k] ? "premium" : "default"}`,
+    );
+    const rows = EMOJI_SLOT_KEYS.map((k) => {
+      const set = { text: `Set ${EMOJI_SLOTS[k].label}`, callback_data: cb(chatId, "emoji", "i", `e_${k}`) };
+      return s.emoji[k]
+        ? [set, { text: "Reset", callback_data: cb(chatId, "emoji", "x", `ce_${k}`) }]
+        : [set];
+    });
+    return {
+      text:
+        "Send a premium emoji for a slot and the bot uses it in its messages and this panel. " +
+        "Buttons keep the default emoji because Telegram does not allow custom emojis in button labels.\n\n" +
+        lines.join("\n"),
+      rows,
     };
   },
 

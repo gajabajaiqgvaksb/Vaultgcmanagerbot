@@ -59,6 +59,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   logs: {
     enabled: true,
   },
+  // Premium emoji per bot slot (see emoji.js): { slotKey: customEmojiId }.
+  emoji: {},
 });
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -76,6 +78,14 @@ export function mergeSettings(partial = {}) {
     }
   };
   walk(out, partial);
+
+  // The emoji map has dynamic keys: keep only valid numeric custom emoji ids.
+  out.emoji = {};
+  if (isObj(partial.emoji)) {
+    for (const [slot, id] of Object.entries(partial.emoji)) {
+      if (typeof id === "string" && /^\d{5,30}$/.test(id)) out.emoji[slot] = id;
+    }
+  }
   return out;
 }
 
