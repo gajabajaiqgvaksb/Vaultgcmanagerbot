@@ -39,9 +39,13 @@ export function loadConfig(env = process.env) {
     }
   }
 
+  // Channel a group owner must join to claim the free plan, e.g. @mychannel.
+  const freePlanChannel = env.FREE_PLAN_CHANNEL?.trim() || "";
+
   return {
     token,
     ownerIds,
+    freePlanChannel,
     mode,
     port,
     publicUrl,

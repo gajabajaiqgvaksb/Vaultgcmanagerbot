@@ -9,19 +9,21 @@ import { ModerationPipeline } from "./pipeline.js";
 import { Commands } from "./commands.js";
 import { Panel, PendingInputs } from "./panel.js";
 import { renderWelcome, welcomeKeyboard } from "./welcome.js";
+import { FreePlan } from "./plans.js";
 import { esc, mention, SUBSCRIPTION_SOON } from "./util.js";
 
 export function createBot(config, { fetchImpl, dbPath } = {}) {
   const store = openDatabase(dbPath ?? config.dbPath);
   const client = new TelegramClient({ token: config.token, apiBase: config.apiBase, fetchImpl });
-  const permissions = new PermissionService({ client, ownerIds: config.ownerIds });
+  const permissions = new PermissionService({ client, ownerIds: config.ownerIds, store });
   const enforcer = new Enforcer({ client, store });
   const forceSub = new ForceSubscribe({ client });
   const pipeline = new ModerationPipeline({ client, store, permissions, enforcer, forceSub });
   const inputs = new PendingInputs();
   const panel = new Panel({ client, store, permissions, inputs });
-  const commands = new Commands({ client, store, permissions, enforcer, panel });
-  return new Bot({ client, store, permissions, pipeline, commands, panel, inputs, forceSub, config });
+  const freePlan = new FreePlan({ store, forceSub, channel: config.freePlanChannel });
+  const commands = new Commands({ client, store, permissions, enforcer, panel, freePlan });
+  return new Bot({ client, store, permissions, pipeline, commands, panel, inputs, forceSub, freePlan, config });
 }
 
 export class Bot {
@@ -64,9 +66,26 @@ export class Bot {
     const adder = update.from;
     this.store.log(chat.id, "bot_added", { actorId: adder?.id ?? null });
 
-    // Only a super admin who adds the bot activates the group.
-    if (!adder || !this.permissions.canManageGroup(chat.id, adder.id)) {
-      return this.client.sendMessage(chat.id, SUBSCRIPTION_SOON);
+    // Super admins activate immediately. Anyone else may claim the free plan.
+    if (!adder || !this.permissions.isOwner(adder.id)) {
+      if (!adder || !this.freePlan.enabled) {
+        return this.client.sendMessage(chat.id, SUBSCRIPTION_SOON);
+      }
+      this.store.setOwner(chat.id, adder.id);
+      return this.client.sendMessage(
+        chat.id,
+        `${mention(adder)}, to use this bot in this group, claim the free plan:\n` +
+          `1. Join ${esc(this.freePlan.channel)}\n2. Tap <b>I JOINED</b> (or send /claim).\n` +
+          "One free group per person. Paid plan: coming soon.",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "JOIN CHANNEL", url: this.freePlan.channelLink() }],
+              [{ text: "I JOINED", callback_data: `plan:claim:${chat.id}` }],
+            ],
+          },
+        },
+      );
     }
 
     this.store.setActive(chat.id, true);
@@ -92,7 +111,7 @@ export class Bot {
       }
       await this.client.answerCallbackQuery(query.id, result.alert ?? "");
       if (result.screen && query.message) {
-        const view = this.panel.render(chatId, result.screen);
+        const view = this.panel.render(chatId, result.screen, this.permissions.isOwner(query.from.id));
         await this.client.editMessageText(chatId, query.message.message_id, view.text, { reply_markup: view.reply_markup });
       }
       return;
@@ -108,6 +127,13 @@ export class Bot {
         targetId,
       });
       return this.client.answerCallbackQuery(query.id, res.alert, !res.ok);
+    }
+
+    if (data.startsWith("plan:claim:")) {
+      const res = await this.freePlan.claim(chatId, query.from.id);
+      await this.client.answerCallbackQuery(query.id, res.text, !res.ok);
+      if (res.ok) await this.client.sendMessage(chatId, esc(res.text));
+      return;
     }
 
     if (data === "rules:show") {

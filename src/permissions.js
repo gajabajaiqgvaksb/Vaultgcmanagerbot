@@ -6,8 +6,9 @@ const CACHE_TTL_MS = 60_000;
 const ADMIN_STATUSES = new Set(["creator", "administrator"]);
 
 export class PermissionService {
-  constructor({ client, ownerIds = [], now = () => Date.now() }) {
+  constructor({ client, ownerIds = [], store = null, now = () => Date.now() }) {
     this.client = client;
+    this.store = store;
     this.owners = new Set(ownerIds);
     this.now = now;
     this.cache = new Map();
@@ -17,11 +18,12 @@ export class PermissionService {
     return this.owners.has(userId);
   }
 
-  // Who may set up and manage a group (panel, admin commands, activation).
-  // Right now only super admins. When subscriptions launch, change this one
-  // function to also allow paying group owners.
+  // Super admins manage any group. A group owner manages their own group once
+  // it is activated (free plan claim, or a super admin's activation).
   canManageGroup(chatId, userId) {
-    return this.isOwner(userId);
+    if (this.isOwner(userId)) return true;
+    if (!this.store || !userId) return false;
+    return this.store.isActive(chatId) && this.store.ownerIdOf(chatId) === userId;
   }
 
   async isGroupAdmin(chatId, userId) {

@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS logs (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS logs_chat_idx ON logs (chat_id, id);
+CREATE TABLE IF NOT EXISTS claims (
+  user_id INTEGER PRIMARY KEY,
+  chat_id INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -147,6 +151,30 @@ export class Store {
     };
     this.saveSettings(chatId, merged);
     return true;
+  }
+
+  // ---- ownership and plans ----
+
+  ownerIdOf(chatId) {
+    return this.getSettings(chatId).subscription.ownerId;
+  }
+
+  setOwner(chatId, userId) {
+    const s = this.getSettings(chatId);
+    s.subscription.ownerId = userId;
+    this.saveSettings(chatId, s);
+  }
+
+  // The one group a user has claimed on the free plan, or null.
+  claimOf(userId) {
+    const row = this.db.prepare("SELECT chat_id FROM claims WHERE user_id = ?").get(userId);
+    return row ? row.chat_id : null;
+  }
+
+  setClaim(userId, chatId) {
+    this.db
+      .prepare("INSERT INTO claims (user_id, chat_id) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET chat_id = excluded.chat_id")
+      .run(userId, chatId);
   }
 
   isActive(chatId) {

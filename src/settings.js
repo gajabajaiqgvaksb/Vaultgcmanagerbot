@@ -6,6 +6,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // until activated. Subscriptions will later decide this instead.
   subscription: {
     active: false,
+    ownerId: 0, // user who added the bot; 0 = none
+    plan: "", // "" (not claimed) | "free" | "paid"
   },
   links: {
     enabled: true,

@@ -7,6 +7,9 @@ import { DEFAULT_SETTINGS, getPath, setPath, toggle } from "./settings.js";
 import { esc, parseChatRef, SUBSCRIPTION_SOON } from "./util.js";
 import { entitiesToHtml, firstCustomEmojiId } from "./entities.js";
 import { EMOJI_SLOTS, EMOJI_SLOT_KEYS, isEmojiSlot, emojiHtml } from "./emoji.js";
+import { FEATURES, ADVANCED_CYCLE_CODES, lockedFeatures } from "./plans.js";
+
+const LOCK_TEXT = "Available on the paid plan (coming soon).";
 import { MAX_WELCOME_LENGTH, parseButtons } from "./welcome.js";
 
 const INPUT_TTL_MS = 10 * 60_000;
@@ -98,12 +101,13 @@ export class Panel {
   }
 
   // Renders a screen. Returns { text, reply_markup }.
-  render(chatId, screen = "home") {
+  render(chatId, screen = "home", viewerIsSuper = false) {
     const group = this.store.getGroup(chatId);
     const s = group?.settings ?? structuredClone(DEFAULT_SETTINGS);
     const title = esc(group?.title || String(chatId));
     const build = SCREENS_RENDER[screen] ?? SCREENS_RENDER.home;
-    const { text, rows } = build({ s, chatId, store: this.store, group });
+    const locked = !viewerIsSuper && lockedFeatures(s).has(FEATURES.EMOJI);
+    const { text, rows } = build({ s, chatId, store: this.store, group, locked });
     const nav = screen === "home"
       ? []
       : [[{ text: "⬅ Back", callback_data: cb(chatId, "home", "g") }]];
@@ -121,6 +125,14 @@ export class Panel {
 
     if (!this.permissions.canManageGroup(chatId, actor.id)) {
       return { alert: SUBSCRIPTION_SOON };
+    }
+
+    // Free-plan locks. Super admins are never locked.
+    if (!this.permissions.isOwner(actor.id)) {
+      const locks = lockedFeatures(this.store.getSettings(chatId));
+      const advanced = op === "c" && ADVANCED_CYCLE_CODES.has(code) && locks.has(FEATURES.ADVANCED);
+      const emoji = (op === "i" && code?.startsWith("e_")) || (op === "x" && code?.startsWith("ce_"));
+      if ((advanced || (emoji && locks.has(FEATURES.EMOJI)))) return { alert: LOCK_TEXT };
     }
 
     if (op === "g") return { screen };
@@ -406,7 +418,10 @@ const SCREENS_RENDER = {
     };
   },
 
-  emoji: ({ s, chatId }) => {
+  emoji: ({ s, chatId, locked }) => {
+    if (locked) {
+      return { text: `Premium emoji is part of the paid plan. ${LOCK_TEXT}`, rows: [] };
+    }
     const lines = EMOJI_SLOT_KEYS.map((k) =>
       `${emojiHtml(k, s.emoji)} ${esc(EMOJI_SLOTS[k].label)} — ${s.emoji[k] ? "premium" : "default"}`,
     );

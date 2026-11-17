@@ -4,6 +4,10 @@
 import { TelegramError } from "./telegram.js";
 import { FULL_PERMISSIONS, NO_PERMISSIONS } from "./enforce.js";
 import { esc, mention, parseDuration, parseUserRef, SUBSCRIPTION_SOON } from "./util.js";
+import { FEATURES, lockedFeatures, PAID_PLAN_TEXT } from "./plans.js";
+
+// Commands any user may run to claim or check a plan (they check ownership themselves).
+const PLAN_COMMANDS = new Set(["claim", "plan"]);
 
 const MAX_PURGE = 100;
 
@@ -11,12 +15,13 @@ const MAX_PURGE = 100;
 const PUBLIC_COMMANDS = new Set(["help", "id", "rules"]);
 
 export class Commands {
-  constructor({ client, store, permissions, enforcer, panel }) {
+  constructor({ client, store, permissions, enforcer, panel, freePlan }) {
     this.client = client;
     this.store = store;
     this.permissions = permissions;
     this.enforcer = enforcer;
     this.panel = panel;
+    this.freePlan = freePlan;
   }
 
   // Returns true when the message was a command this handler processed.
@@ -35,6 +40,10 @@ export class Commands {
     if (!handler) return false;
 
     try {
+      if (PLAN_COMMANDS.has(name)) {
+        await handler(message, args);
+        return true;
+      }
       if (!PUBLIC_COMMANDS.has(name) && !this.permissions.canManageGroup(message.chat.id, message.from.id)) {
         await this.reply(message, SUBSCRIPTION_SOON);
         return true;
@@ -63,6 +72,8 @@ export class Commands {
       help: (m) => this.reply(m, HELP_TEXT),
       panel: (m) => this.openPanel(m),
       status: (m) => this.statusCmd(m),
+      claim: (m) => this.claimCmd(m),
+      plan: (m) => this.planCmd(m),
       settemplate: (m) => this.setTemplate(m),
       applytemplate: (m) => this.applyTemplateCmd(m),
       activate: (m) => this.setActive(m, true),
@@ -156,6 +167,9 @@ export class Commands {
 
   async setTemplate(message) {
     const settings = this.store.getSettings(message.chat.id);
+    if (!this.permissions.isOwner(message.from.id) && lockedFeatures(settings).has(FEATURES.TEMPLATES)) {
+      return this.reply(message, "Templates are part of the paid plan. " + PAID_PLAN_TEXT);
+    }
     this.store.saveTemplate(settings);
     this.store.log(message.chat.id, "template_save", { actorId: message.from.id });
     await this.reply(
@@ -165,6 +179,9 @@ export class Commands {
   }
 
   async applyTemplateCmd(message) {
+    if (!this.permissions.isOwner(message.from.id) && lockedFeatures(this.store.getSettings(message.chat.id)).has(FEATURES.TEMPLATES)) {
+      return this.reply(message, "Templates are part of the paid plan. " + PAID_PLAN_TEXT);
+    }
     if (!this.store.applyTemplate(message.chat.id)) {
       return this.reply(message, "No template saved yet. Set up this group, then send /settemplate.");
     }
@@ -179,8 +196,27 @@ export class Commands {
     await this.reply(message, active ? "Group activated. Send /panel to configure it." : "Group deactivated. Moderation is off.");
   }
 
+  async claimCmd(message) {
+    if (!this.freePlan.enabled) return this.reply(message, "The free plan is not available right now.");
+    const res = await this.freePlan.claim(message.chat.id, message.from.id);
+    await this.reply(message, esc(res.text));
+  }
+
+  async planCmd(message) {
+    const s = this.store.getSettings(message.chat.id);
+    const plan = s.subscription.plan === "free" ? "Free (claimed by the bot's adder)" : s.subscription.plan === "" && s.subscription.active ? "Super admin managed" : "Not activated";
+    const lines = [
+      "<b>Plan</b>",
+      `This group: ${esc(plan)}`,
+      `Free plan: ${this.freePlan.enabled ? `join ${esc(this.freePlan.channel)}, then tap I JOINED or send /claim (one group per person)` : "not available right now"}`,
+      "Free plan locks: premium emojis, templates, advanced warning and flood thresholds.",
+      PAID_PLAN_TEXT,
+    ];
+    await this.reply(message, lines.join("\n"), { parse_mode: "HTML" });
+  }
+
   async openPanel(message) {
-    const view = this.panel.render(message.chat.id, "home");
+    const view = this.panel.render(message.chat.id, "home", this.permissions.isOwner(message.from.id));
     await this.client.sendMessage(message.chat.id, view.text, { reply_markup: view.reply_markup });
   }
 
@@ -371,6 +407,7 @@ const HELP_TEXT = [
   "/id /info — inspect a user or chat",
   "/panel — open the inline admin panel",
   "/status — check activation, rights and privacy mode (super admins)",
+  "/plan — plan status · /claim — claim the free plan (group owner)",
 ].join("\n");
 
 function friendly(err) {
