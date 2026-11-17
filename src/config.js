@@ -46,6 +46,8 @@ export function loadConfig(env = process.env) {
     token,
     ownerIds,
     freePlanChannel,
+    // Supabase/Postgres connection string. When set, state is snapshotted there.
+    databaseUrl: env.DATABASE_URL?.trim() || "",
     mode,
     port,
     publicUrl,

@@ -6,6 +6,17 @@ import { DEFAULT_SETTINGS, mergeSettings } from "./settings.js";
 
 const TEMPLATE_CHAT_ID = 0;
 
+// Every table that holds bot state. Used for snapshots to Postgres.
+export const STATE_TABLES = Object.freeze([
+  "groups",
+  "group_admins",
+  "banned_words",
+  "warnings",
+  "logs",
+  "claims",
+  "meta",
+]);
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS groups (
   chat_id    INTEGER PRIMARY KEY,
@@ -257,6 +268,34 @@ export class Store {
 
   logCounts(chatId) {
     return this.stmts.countLogs.all(chatId);
+  }
+
+  // Full copy of all state tables, as plain JSON-safe rows.
+  exportAll() {
+    const out = {};
+    for (const table of STATE_TABLES) {
+      out[table] = this.db.prepare(`SELECT * FROM ${table}`).all().map((r) => ({ ...r }));
+    }
+    return out;
+  }
+
+  // Replaces all state with a snapshot produced by exportAll().
+  importAll(data) {
+    this.db.exec("BEGIN");
+    try {
+      for (const table of STATE_TABLES) {
+        this.db.exec(`DELETE FROM ${table}`);
+        for (const row of data?.[table] ?? []) {
+          const cols = Object.keys(row);
+          const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`;
+          this.db.prepare(sql).run(...cols.map((c) => row[c]));
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   getMeta(key) {
