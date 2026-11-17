@@ -27,9 +27,21 @@ export function createBot(config, { fetchImpl, dbPath } = {}) {
 export class Bot {
   constructor(deps) {
     Object.assign(this, deps);
+    this.counters = { updates: 0, lastUpdateAt: null, botUsername: null };
+  }
+
+  stats() {
+    return {
+      updates: this.counters.updates,
+      lastUpdateAt: this.counters.lastUpdateAt,
+      botUsername: this.counters.botUsername,
+      database: "sqlite (local file; free Render disk is wiped on every redeploy)",
+    };
   }
 
   async handleUpdate(update) {
+    this.counters.updates += 1;
+    this.counters.lastUpdateAt = Date.now();
     try {
       if (update.my_chat_member) return await this.onMyChatMember(update.my_chat_member);
       if (update.callback_query) return await this.onCallback(update.callback_query);
@@ -165,9 +177,26 @@ export class Bot {
     await this.client.sendMessage(userId, text);
   }
 
+  // Starts receiving updates. In webhook mode Telegram pushes updates to the
+  // HTTP server, so this returns right away. In polling mode it loops forever.
   async start() {
     const me = await this.client.getMe();
+    this.counters.botUsername = me.username;
+
+    if (this.config.mode === "webhook") {
+      const url = `${this.config.publicUrl}/telegram`;
+      await this.client.setWebhook(url, this.config.webhookSecret);
+      console.log(`Connected as @${me.username} (${me.id}). Webhook set to ${url}`);
+      return;
+    }
+
+    // An active webhook makes getUpdates fail with 409, so clear it first.
+    await this.client.deleteWebhook();
     console.log(`Connected as @${me.username} (${me.id}). Polling for updates...`);
+    return this.poll();
+  }
+
+  async poll() {
     let offset = this.loadOffset();
 
     let running = true;

@@ -162,6 +162,19 @@ export class TelegramClient {
     return this.call("setChatPermissions", { chat_id: chatId, permissions });
   }
 
+  setWebhook(url, secretToken) {
+    return this.call("setWebhook", {
+      url,
+      secret_token: secretToken,
+      allowed_updates: ["message", "callback_query", "my_chat_member"],
+      drop_pending_updates: false,
+    });
+  }
+
+  deleteWebhook() {
+    return this.call("deleteWebhook", { drop_pending_updates: false });
+  }
+
   getMe() {
     return this.call("getMe");
   }
