@@ -278,3 +278,25 @@ test("/activate and /deactivate work only for super admins", async () => {
   await bot.handleUpdate(msg({ id: SUPER, first_name: "Super" }, "/deactivate"));
   assert.equal(bot.store.isActive(group.id), false);
 });
+
+test("/status reports activation and privacy mode to a super admin", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  bot.permissions.botCanReadAll = false;
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Super" }, "/status"));
+
+  const text = lastSent(tg).params.text;
+  assert.match(text, /Activated: yes/);
+  assert.match(text, /Sees all messages: NO/);
+  assert.match(text, /Bot is admin: yes/);
+});
+
+test("/status is refused for normal members", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/status"));
+
+  assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
+});

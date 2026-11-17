@@ -36,6 +36,7 @@ export class Bot {
       lastUpdateAt: this.counters.lastUpdateAt,
       botUsername: this.counters.botUsername,
       database: "sqlite (local file; free Render disk is wiped on every redeploy)",
+      canReadAll: this.permissions.botCanReadAll,
     };
   }
 
@@ -188,6 +189,14 @@ export class Bot {
   async start() {
     const me = await this.client.getMe();
     this.counters.botUsername = me.username;
+    // False means BotFather privacy mode is ON: the bot only sees commands and
+    // replies in groups, not normal messages, so moderation cannot work.
+    this.permissions.botCanReadAll = me.can_read_all_group_messages === true;
+    if (!this.permissions.botCanReadAll) {
+      console.warn(
+        "WARNING: privacy mode is ON. In @BotFather send /setprivacy, choose this bot, then Disable.",
+      );
+    }
 
     if (this.config.mode === "webhook") {
       const url = `${this.config.publicUrl}/telegram`;

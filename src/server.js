@@ -92,6 +92,7 @@ export function statusPage(bot, config, startedAt, nowMs) {
     `Updates handled:  ${stats.updates}`,
     `Last update:      ${stats.lastUpdateAt ? new Date(stats.lastUpdateAt).toISOString() : "none yet"}`,
     `Database:         ${stats.database}`,
+    `Sees all messages: ${stats.canReadAll ? "yes" : "NO (privacy mode on: /setprivacy -> Disable)"}`,
     "",
     "Health check:     /health",
   ];

@@ -62,6 +62,7 @@ export class Commands {
     return {
       help: (m) => this.reply(m, HELP_TEXT),
       panel: (m) => this.openPanel(m),
+      status: (m) => this.statusCmd(m),
       settemplate: (m) => this.setTemplate(m),
       applytemplate: (m) => this.applyTemplateCmd(m),
       activate: (m) => this.setActive(m, true),
@@ -135,6 +136,23 @@ export class Commands {
   }
 
   // ---- command implementations ----
+
+  async statusCmd(message) {
+    const chatId = message.chat.id;
+    const rights = await this.permissions.botRights(chatId);
+    const active = this.store.isActive(chatId);
+    const canReadAll = this.permissions.botCanReadAll === true;
+    const lines = [
+      "<b>Group status</b>",
+      `Activated: ${active ? "yes" : "NO (moderation off; a super admin must /activate)"}`,
+      `Sees all messages: ${canReadAll ? "yes" : "NO (BotFather /setprivacy -> Disable)"}`,
+      `Bot is admin: ${rights ? "yes" : "NO (promote it with delete, restrict, pin, invite rights)"}`,
+      rights
+        ? `Rights: delete ${rights.canDelete ? "ok" : "MISSING"}, restrict ${rights.canRestrict ? "ok" : "MISSING"}, pin ${rights.canPin ? "ok" : "MISSING"}`
+        : "",
+    ].filter(Boolean);
+    await this.reply(message, lines.join("\n"), { parse_mode: "HTML" });
+  }
 
   async setTemplate(message) {
     const settings = this.store.getSettings(message.chat.id);
@@ -352,6 +370,7 @@ const HELP_TEXT = [
   "/setrules &lt;text&gt; /rules",
   "/id /info — inspect a user or chat",
   "/panel — open the inline admin panel",
+  "/status — check activation, rights and privacy mode (super admins)",
 ].join("\n");
 
 function friendly(err) {
