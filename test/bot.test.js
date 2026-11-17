@@ -67,7 +67,7 @@ test("regular user posting a banned word gets the message deleted and a warning"
   const del = tg.calls.find((c) => c.method === "deleteMessage");
   assert.ok(del, "message was deleted");
   assert.equal(del.params.message_id, 10);
-  assert.match(lastSent(tg).params.text, /prohibited word/);
+  assert.match(lastSent(tg).params.text, /Banned word used: <code>free money<\/code>/);
   assert.equal(bot.store.getWarnings(group.id, SPAMMER), 1);
 });
 

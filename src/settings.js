@@ -43,6 +43,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     limit: 3, // warnings before automatic mute
     action: "mute", // "mute" | "kick" | "ban"
     muteMinutes: 60,
+    // Name the banned word(s) in the warning when a message has this many or fewer.
+    // Messages with more banned words get a generic warning. 0 = never name them.
+    revealWordsUpTo: 4,
   },
   welcome: {
     enabled: false,

@@ -62,6 +62,8 @@ export class Commands {
     return {
       help: (m) => this.reply(m, HELP_TEXT),
       panel: (m) => this.openPanel(m),
+      settemplate: (m) => this.setTemplate(m),
+      applytemplate: (m) => this.applyTemplateCmd(m),
       activate: (m) => this.setActive(m, true),
       deactivate: (m) => this.setActive(m, false),
       ban: (m, a) => this.targetAction(m, a, "ban"),
@@ -133,6 +135,24 @@ export class Commands {
   }
 
   // ---- command implementations ----
+
+  async setTemplate(message) {
+    const settings = this.store.getSettings(message.chat.id);
+    this.store.saveTemplate(settings);
+    this.store.log(message.chat.id, "template_save", { actorId: message.from.id });
+    await this.reply(
+      message,
+      "Template saved from this group's settings (welcome text and buttons, warnings, links, duplicates, flood, banned-word settings). New groups will start with it; use /applytemplate to apply it here.",
+    );
+  }
+
+  async applyTemplateCmd(message) {
+    if (!this.store.applyTemplate(message.chat.id)) {
+      return this.reply(message, "No template saved yet. Set up this group, then send /settemplate.");
+    }
+    this.store.log(message.chat.id, "template_apply", { actorId: message.from.id });
+    await this.reply(message, "Template applied to this group. Channel and subscription settings were kept.");
+  }
 
   async setActive(message, active) {
     this.store.ensureGroup(message.chat.id, message.chat.title ?? "");

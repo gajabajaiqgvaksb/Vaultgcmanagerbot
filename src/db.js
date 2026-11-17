@@ -4,6 +4,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DEFAULT_SETTINGS, mergeSettings } from "./settings.js";
 
+const TEMPLATE_CHAT_ID = 0;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS groups (
   chat_id    INTEGER PRIMARY KEY,
@@ -113,6 +115,38 @@ export class Store {
 
   getSettings(chatId) {
     return this.getGroup(chatId)?.settings ?? structuredClone(DEFAULT_SETTINGS);
+  }
+
+  // ---- premium template: one settings set applied to new/other groups ----
+  // Stored as a pseudo-group row with chat_id 0 (Telegram chat ids are never 0).
+
+  getTemplate() {
+    const row = this.stmts.getGroup.get(TEMPLATE_CHAT_ID);
+    if (!row) return null;
+    return mergeSettings(JSON.parse(row.settings || "{}"));
+  }
+
+  saveTemplate(settings) {
+    this.stmts.insertGroup.run(TEMPLATE_CHAT_ID, "template");
+    const tpl = structuredClone(settings);
+    tpl.forceSubscribe.channel = ""; // channels are per group
+    this.stmts.updateSettings.run(JSON.stringify(tpl), TEMPLATE_CHAT_ID);
+  }
+
+  // Copies the template into a group, keeping that group's own channel and
+  // subscription state. Returns false when no template is saved.
+  applyTemplate(chatId) {
+    const tpl = this.getTemplate();
+    if (!tpl) return false;
+    const current = this.getSettings(chatId);
+    const merged = structuredClone(tpl);
+    merged.subscription = current.subscription;
+    merged.forceSubscribe = {
+      enabled: current.forceSubscribe.enabled,
+      channel: current.forceSubscribe.channel,
+    };
+    this.saveSettings(chatId, merged);
+    return true;
   }
 
   isActive(chatId) {

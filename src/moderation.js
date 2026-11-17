@@ -1,16 +1,7 @@
 // Moderation rules. Each checker is pure (or takes explicit state) and returns
 // either null (message is fine) or { rule, reason } describing the violation.
 
-export const DEFAULT_BANNED_WORDS = Object.freeze([
-  "free money",
-  "earn daily",
-  "double your money",
-  "guaranteed profit",
-  "crypto giveaway",
-  "send me your seed",
-  "click here to claim",
-  "work from home earn",
-]);
+export { DEFAULT_WORDS as DEFAULT_BANNED_WORDS } from "./default_words.js";
 
 const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"']+|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|info|biz|xyz|top|ru|cn|tk|ml|ga|cf|gq|online|site|store|shop|club|link|live|click)\b[^\s<>"']*)/gi;
 const TELEGRAM_RE = /\b(?:t\.me|telegram\.me|telegram\.dog)\/[^\s<>"']+/i;
@@ -44,17 +35,45 @@ export function checkLinks(text, linkSettings) {
   return null;
 }
 
+// Returns every banned word/phrase found in the text (unique, in text order),
+// or null. Whole-word matching; longer phrases win over their substrings.
 export function checkBannedWords(text, words) {
   if (!text || !words?.length) return null;
+  const re = compiledWordList(words);
+  if (!re) return null;
   const haystack = normalize(text);
-  for (const word of words) {
-    const needle = normalize(word);
-    if (!needle) continue;
-    if (wordBoundaryIncludes(haystack, needle)) {
-      return { rule: "bannedWords", reason: "Message contains a prohibited word", matched: word };
-    }
+  const found = [];
+  for (const m of haystack.matchAll(re)) {
+    if (!found.includes(m[1])) found.push(m[1]);
   }
-  return null;
+  if (found.length === 0) return null;
+  return {
+    rule: "bannedWords",
+    reason: found.length > 4
+      ? "Message contains several prohibited words"
+      : `Message contains a prohibited word`,
+    matched: found,
+  };
+}
+
+// One regex per distinct word list, cached so 1000+ words stay fast per message.
+const regexCache = new Map();
+const REGEX_CACHE_MAX = 50;
+
+function compiledWordList(words) {
+  const key = words.join("\n");
+  if (regexCache.has(key)) return regexCache.get(key);
+
+  const needles = [...new Set(words.map(normalize).filter(Boolean))]
+    .sort((a, b) => b.length - a.length) // longer phrases first in the alternation
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = needles.length
+    ? new RegExp(`(?<![\\p{L}\\p{N}])(${needles.join("|")})(?![\\p{L}\\p{N}])`, "gu")
+    : null;
+
+  if (regexCache.size >= REGEX_CACHE_MAX) regexCache.delete(regexCache.keys().next().value);
+  regexCache.set(key, re);
+  return re;
 }
 
 export function checkExcessive(text, cfg) {
@@ -148,9 +167,4 @@ export function normalize(text) {
     .replace(/[​-‏⁠﻿]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function wordBoundaryIncludes(haystack, needle) {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(haystack);
 }

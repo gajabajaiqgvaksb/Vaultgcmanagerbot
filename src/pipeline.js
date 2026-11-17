@@ -11,9 +11,22 @@ import {
   checkLinks,
   checkSuspiciousAccount,
 } from "./moderation.js";
-import { mention } from "./util.js";
+import { esc, mention } from "./util.js";
 
 const RIGHTS_CACHE_MS = 60_000;
+
+// Warning text. Names the banned word(s) only when the message has few of them,
+// so a user with a long list of words does not learn the full list.
+export function describeViolation(violation, revealWordsUpTo) {
+  if (violation.rule === "bannedWords" && violation.matched?.length) {
+    if (violation.matched.length <= revealWordsUpTo) {
+      const words = violation.matched.map((w) => `<code>${esc(w)}</code>`).join(", ");
+      return `Banned word used: ${words}`;
+    }
+    return "Message contains several prohibited words";
+  }
+  return violation.reason;
+}
 
 export class ModerationPipeline {
   constructor({ client, store, permissions, enforcer, forceSub, now = () => Date.now() }) {
@@ -93,8 +106,10 @@ export class ModerationPipeline {
     await this.client.deleteMessage(chatId, message.message_id);
     this.store.log(chatId, `delete:${violation.rule}`, { targetId: user.id, detail: violation.reason });
 
+    const reason = describeViolation(violation, settings.warnings.revealWordsUpTo);
+
     if (!settings.warnings.enabled) {
-      await this.client.sendMessage(chatId, `${mention(user)}: ${violation.reason}.`);
+      await this.client.sendMessage(chatId, `${mention(user)}: ${reason}.`);
       return { action: "deleted", rule: violation.rule };
     }
 
@@ -102,7 +117,7 @@ export class ModerationPipeline {
     const tail = result.actioned
       ? `Limit reached. Action applied: <b>${result.actioned}</b>.`
       : `Warning ${result.count}/${result.limit}.`;
-    await this.client.sendMessage(chatId, `${mention(user)}: ${violation.reason}. ${tail}`);
+    await this.client.sendMessage(chatId, `${mention(user)}: ${reason}. ${tail}`);
     return { action: "warned", rule: violation.rule, count: result.count };
   }
 }

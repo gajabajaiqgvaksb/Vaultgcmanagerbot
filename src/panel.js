@@ -37,6 +37,7 @@ const CYCLE = {
   dw: { path: "duplicates.windowSec", values: [60, 300, 900, 3600] },
   fm: { path: "flood.maxMessages", values: [3, 5, 6, 8, 10] },
   fp: { path: "flood.perSeconds", values: [5, 10, 20, 30] },
+  wr: { path: "warnings.revealWordsUpTo", values: [0, 1, 2, 3, 4, 6] },
 };
 
 // Text inputs the admin types as their next message in the group.
@@ -314,6 +315,7 @@ const SCREENS_RENDER = {
       [boolBtn(chatId, "warnings", "Warnings enabled", "wn", s.warnings.enabled)],
       [cycleBtn(chatId, "warnings", "Limit", "wl", s.warnings.limit), cycleBtn(chatId, "warnings", "Action", "wa", s.warnings.action)],
       [cycleBtn(chatId, "warnings", "Mute minutes", "wm", s.warnings.muteMinutes)],
+      [cycleBtn(chatId, "warnings", "Name words up to", "wr", s.warnings.revealWordsUpTo)],
     ],
   }),
 

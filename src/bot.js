@@ -69,11 +69,13 @@ export class Bot {
     }
 
     this.store.setActive(chat.id, true);
+    const fromTemplate = this.store.applyTemplate(chat.id);
     const rights = await this.permissions.botRights(chat.id);
     const rightsNote = rights
       ? "Ready."
       : "To moderate, I need admin rights: delete messages, restrict members, pin messages and invite users.";
-    await this.client.sendMessage(chat.id, `Group activated. ${rightsNote} Send /panel to configure.`);
+    const templateNote = fromTemplate ? " Saved template applied." : "";
+    await this.client.sendMessage(chat.id, `Group activated.${templateNote} ${rightsNote} Send /panel to configure.`);
   }
 
   async onCallback(query) {
