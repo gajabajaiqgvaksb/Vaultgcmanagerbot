@@ -1,0 +1,15 @@
+{
+  "name": "vaultgc-manager-bot",
+  "version": "1.0.0",
+  "description": "Telegram group management and moderation bot with an inline admin panel",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings src/index.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "license": "MIT"
+}

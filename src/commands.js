@@ -1,0 +1,331 @@
+// Admin and utility slash commands. Every admin command re-verifies the caller
+// and refuses to act on another admin or on the bot itself.
+
+import { TelegramError } from "./telegram.js";
+import { FULL_PERMISSIONS, NO_PERMISSIONS } from "./enforce.js";
+import { esc, mention, parseDuration, parseUserRef } from "./util.js";
+
+const MAX_PURGE = 100;
+
+// Commands any member may use. Everything else is admin-only.
+const PUBLIC_COMMANDS = new Set(["help", "id", "rules"]);
+
+export class Commands {
+  constructor({ client, store, permissions, enforcer, panel }) {
+    this.client = client;
+    this.store = store;
+    this.permissions = permissions;
+    this.enforcer = enforcer;
+    this.panel = panel;
+  }
+
+  // Returns true when the message was a command this handler processed.
+  async handle(message) {
+    const text = message.text;
+    if (!text?.startsWith("/")) return false;
+
+    const [head, ...rest] = text.trim().split(/\s+/);
+    const name = head.slice(1).split("@")[0].toLowerCase();
+    const args = rest.join(" ");
+    const isPrivate = message.chat.type === "private";
+
+    if (isPrivate) return this.handlePrivate(name, message);
+
+    const handler = this.groupHandlers()[name];
+    if (!handler) return false;
+
+    try {
+      if (!PUBLIC_COMMANDS.has(name) && !(await this.permissions.isGroupAdmin(message.chat.id, message.from.id))) {
+        await this.reply(message, "Only group admins can use this command.");
+        return true;
+      }
+      await handler(message, args);
+    } catch (err) {
+      await this.reply(message, `Failed: ${esc(friendly(err))}`);
+    }
+    return true;
+  }
+
+  async handlePrivate(name, message) {
+    if (name === "start" || name === "help") {
+      await this.client.sendMessage(
+        message.chat.id,
+        "<b>VaultGC Manager</b>\nAdd me to a group as an admin with delete, restrict, pin and invite rights, " +
+          "then send /panel in the group to configure it.",
+      );
+      return true;
+    }
+    return false;
+  }
+
+  groupHandlers() {
+    return {
+      help: (m) => this.reply(m, HELP_TEXT),
+      panel: (m) => this.openPanel(m),
+      ban: (m, a) => this.targetAction(m, a, "ban"),
+      unban: (m, a) => this.targetAction(m, a, "unban"),
+      kick: (m, a) => this.targetAction(m, a, "kick"),
+      mute: (m, a) => this.muteCmd(m, a),
+      unmute: (m, a) => this.targetAction(m, a, "unmute"),
+      warn: (m, a) => this.warnCmd(m, a),
+      unwarn: (m, a) => this.unwarnCmd(m, a),
+      warnings: (m, a) => this.warningsCmd(m, a),
+      purge: (m) => this.purgeCmd(m),
+      id: (m) => this.idCmd(m),
+      info: (m, a) => this.infoCmd(m, a),
+      rules: (m) => this.rulesCmd(m),
+      setrules: (m, a) => this.setRulesCmd(m, a),
+      lock: (m) => this.lockCmd(m, true),
+      unlock: (m) => this.lockCmd(m, false),
+      pin: (m) => this.pinCmd(m, true),
+      unpin: (m) => this.pinCmd(m, false),
+      promote: (m, a) => this.promoteCmd(m, a, true),
+      demote: (m, a) => this.promoteCmd(m, a, false),
+    };
+  }
+
+  // ---- helpers ----
+
+  async reply(message, text, extra = {}) {
+    return this.client.sendMessage(message.chat.id, text, {
+      reply_to_message_id: message.message_id,
+      allow_sending_without_reply: true,
+      ...extra,
+    });
+  }
+
+  // Resolves the target user from a reply, or from a numeric id in args.
+  // Returns { user, rest } or null after replying with an explanation.
+  async resolveTarget(message, args) {
+    if (message.reply_to_message?.from) {
+      return { user: message.reply_to_message.from, rest: args };
+    }
+    const first = args.split(/\s+/)[0] ?? "";
+    const ref = parseUserRef(first);
+    if (ref?.id) {
+      const member = await this.client.getChatMember(message.chat.id, ref.id).catch(() => null);
+      const user = member?.user ?? { id: ref.id, first_name: String(ref.id) };
+      return { user, rest: args.slice(first.length).trim() };
+    }
+    await this.reply(
+      message,
+      "Reply to a user's message, or pass a numeric user ID. Usernames cannot be resolved by the Bot API.",
+    );
+    return null;
+  }
+
+  async guardTarget(message, user) {
+    if (user.id === (await this.botId())) {
+      await this.reply(message, "I will not act on myself.");
+      return false;
+    }
+    if (await this.permissions.isGroupAdmin(message.chat.id, user.id)) {
+      await this.reply(message, "That user is an admin and cannot be moderated with this command.");
+      return false;
+    }
+    return true;
+  }
+
+  async botId() {
+    return (this.botUser ??= await this.client.getMe()).id;
+  }
+
+  // ---- command implementations ----
+
+  async openPanel(message) {
+    const view = this.panel.render(message.chat.id, "home");
+    await this.client.sendMessage(message.chat.id, view.text, { reply_markup: view.reply_markup });
+  }
+
+  async targetAction(message, args, kind) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const { user, rest } = resolved;
+    if (!(await this.guardTarget(message, user))) return;
+    const reason = rest.trim();
+    const opts = { actorId: message.from.id, reason };
+    const chatId = message.chat.id;
+    const who = mention(user);
+
+    if (kind === "ban") await this.enforcer.ban(chatId, user.id, opts);
+    if (kind === "unban") await this.enforcer.unban(chatId, user.id, opts);
+    if (kind === "kick") await this.enforcer.kick(chatId, user.id, opts);
+    if (kind === "unmute") await this.enforcer.unmute(chatId, user.id, opts);
+
+    const verbs = { ban: "banned", unban: "unbanned", kick: "kicked", unmute: "unmuted" };
+    await this.reply(message, `${who} has been ${verbs[kind]}.`, { parse_mode: "HTML" });
+  }
+
+  async muteCmd(message, args) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const { user, rest } = resolved;
+    if (!(await this.guardTarget(message, user))) return;
+    const [durToken, ...reasonParts] = rest.split(/\s+/).filter(Boolean);
+    const minutes = parseDuration(durToken ?? "") ?? 60;
+    const hasDuration = parseDuration(durToken ?? "") !== null;
+    const reason = (hasDuration ? reasonParts : [durToken, ...reasonParts].filter(Boolean)).join(" ");
+    await this.enforcer.mute(message.chat.id, user.id, minutes, { actorId: message.from.id, reason });
+    await this.reply(message, `${mention(user)} muted for ${minutes} minute(s).`, { parse_mode: "HTML" });
+  }
+
+  async warnCmd(message, args) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const { user, rest } = resolved;
+    if (!(await this.guardTarget(message, user))) return;
+    const result = await this.enforcer.warn(message.chat.id, user.id, {
+      actorId: message.from.id,
+      reason: rest.trim(),
+    });
+    const tail = result.actioned
+      ? ` Limit reached: applied <b>${result.actioned}</b>.`
+      : "";
+    await this.reply(message, `${mention(user)} warned (${result.count}/${result.limit}).${tail}`, { parse_mode: "HTML" });
+  }
+
+  async unwarnCmd(message, args) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const count = await this.enforcer.unwarn(message.chat.id, resolved.user.id, { actorId: message.from.id });
+    await this.reply(message, `Removed one warning. ${mention(resolved.user)} now has ${count}.`, { parse_mode: "HTML" });
+  }
+
+  async warningsCmd(message, args) {
+    const target = message.reply_to_message?.from ?? (args ? (await this.resolveTarget(message, args))?.user : null) ?? message.from;
+    const limit = this.store.getSettings(message.chat.id).warnings.limit;
+    const count = this.store.getWarnings(message.chat.id, target.id);
+    await this.reply(message, `${mention(target)} has ${count}/${limit} warnings.`, { parse_mode: "HTML" });
+  }
+
+  async purgeCmd(message) {
+    const rights = await this.permissions.botRights(message.chat.id);
+    if (!rights?.canDelete) return this.reply(message, "I need the delete messages right to purge.");
+    const start = message.reply_to_message?.message_id;
+    if (!start) return this.reply(message, "Reply to the oldest message you want to purge.");
+    const end = message.message_id;
+    if (end - start + 1 > MAX_PURGE) {
+      return this.reply(message, `Purge range is limited to ${MAX_PURGE} messages.`);
+    }
+    const ids = [];
+    for (let id = start; id <= end; id++) ids.push(id);
+    await this.client.deleteMessages(message.chat.id, ids);
+    this.store.log(message.chat.id, "purge", { actorId: message.from.id, detail: `${ids.length} messages` });
+    const note = await this.client.sendMessage(message.chat.id, `Purged ${ids.length} message(s).`);
+    setTimeout(() => this.client.deleteMessage(message.chat.id, note.message_id), 5000).unref?.();
+  }
+
+  async idCmd(message) {
+    const lines = [`Chat ID: <code>${message.chat.id}</code>`, `Your ID: <code>${message.from.id}</code>`];
+    if (message.reply_to_message?.from) {
+      lines.push(`User ID: <code>${message.reply_to_message.from.id}</code>`);
+    }
+    await this.reply(message, lines.join("\n"), { parse_mode: "HTML" });
+  }
+
+  async infoCmd(message, args) {
+    const resolved = message.reply_to_message?.from
+      ? { user: message.reply_to_message.from }
+      : args
+        ? await this.resolveTarget(message, args)
+        : { user: message.from };
+    if (!resolved) return;
+    const user = resolved.user;
+    const member = await this.client.getChatMember(message.chat.id, user.id).catch(() => null);
+    const warnings = this.store.getWarnings(message.chat.id, user.id);
+    await this.reply(
+      message,
+      [
+        `Name: ${esc(`${user.first_name ?? ""} ${user.last_name ?? ""}`.trim())}`,
+        `ID: <code>${user.id}</code>`,
+        `Username: ${user.username ? `@${esc(user.username)}` : "none"}`,
+        `Status: ${member?.status ?? "unknown"}`,
+        `Warnings: ${warnings}`,
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
+  }
+
+  async rulesCmd(message) {
+    const group = this.store.getGroup(message.chat.id);
+    const body = group?.rules ? esc(group.rules) : "No rules have been set yet. Admins can use /setrules.";
+    await this.reply(message, `<b>Group rules</b>\n${body}`, { parse_mode: "HTML" });
+  }
+
+  async setRulesCmd(message, args) {
+    const text = args.trim();
+    if (!text) return this.reply(message, "Usage: /setrules <text>");
+    this.store.setRules(message.chat.id, text.slice(0, 3500));
+    this.store.log(message.chat.id, "setting", { actorId: message.from.id, detail: "rules" });
+    await this.reply(message, "Group rules updated.");
+  }
+
+  async lockCmd(message, lock) {
+    const rights = await this.permissions.botRights(message.chat.id);
+    if (!rights?.canRestrict) return this.reply(message, "I need the restrict members right to lock the chat.");
+    const perms = lock ? NO_PERMISSIONS : FULL_PERMISSIONS;
+    await this.client.setChatPermissions(message.chat.id, perms);
+    this.store.log(message.chat.id, lock ? "lock" : "unlock", { actorId: message.from.id });
+    await this.reply(message, lock ? "Chat locked. Only admins can send messages." : "Chat unlocked.");
+  }
+
+  async pinCmd(message, pin) {
+    const target = message.reply_to_message;
+    if (!target) return this.reply(message, "Reply to the message you want to pin or unpin.");
+    if (pin) await this.client.pinChatMessage(message.chat.id, target.message_id);
+    else await this.client.unpinChatMessage(message.chat.id, target.message_id);
+    this.store.log(message.chat.id, pin ? "pin" : "unpin", { actorId: message.from.id, targetId: target.message_id });
+    await this.reply(message, pin ? "Message pinned." : "Message unpinned.");
+  }
+
+  async promoteCmd(message, args, promote) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const user = resolved.user;
+    if (user.id === (await this.botId())) return this.reply(message, "I cannot change my own rights.");
+    const rights = promote
+      ? {
+          can_manage_chat: true,
+          can_delete_messages: true,
+          can_restrict_members: true,
+          can_pin_messages: true,
+          can_invite_users: true,
+        }
+      : {
+          can_manage_chat: false,
+          can_delete_messages: false,
+          can_restrict_members: false,
+          can_pin_messages: false,
+          can_invite_users: false,
+          can_promote_members: false,
+          can_change_info: false,
+          can_manage_video_chats: false,
+          can_manage_topics: false,
+          can_post_stories: false,
+          can_edit_stories: false,
+          can_delete_stories: false,
+        };
+    await this.client.promoteMember(message.chat.id, user.id, rights);
+    this.permissions.invalidate(message.chat.id, user.id);
+    this.store.log(message.chat.id, promote ? "promote" : "demote", { actorId: message.from.id, targetId: user.id });
+    await this.reply(message, `${mention(user)} ${promote ? "promoted" : "demoted"}.`, { parse_mode: "HTML" });
+  }
+}
+
+const HELP_TEXT = [
+  "<b>Admin commands</b>",
+  "/ban /unban /kick /mute [dur] /unmute — reply or pass a user ID",
+  "/warn [reason] /unwarn /warnings",
+  "/purge — reply to the oldest message to purge",
+  "/lock /unlock — restrict or allow chat messages",
+  "/pin /unpin — reply to a message",
+  "/promote /demote — reply or pass a user ID",
+  "/setrules &lt;text&gt; /rules",
+  "/id /info — inspect a user or chat",
+  "/panel — open the inline admin panel",
+].join("\n");
+
+function friendly(err) {
+  if (err instanceof TelegramError) return err.description;
+  return err?.message ?? "unknown error";
+}
