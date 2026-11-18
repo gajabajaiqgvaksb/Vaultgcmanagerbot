@@ -34,7 +34,7 @@ export class Commands {
     const args = rest.join(" ");
     const isPrivate = message.chat.type === "private";
 
-    if (isPrivate) return this.handlePrivate(name, message);
+    if (isPrivate) return this.handlePrivate(name, message, args);
 
     const handler = this.groupHandlers()[name];
     if (!handler) return false;
@@ -55,16 +55,63 @@ export class Commands {
     return true;
   }
 
-  async handlePrivate(name, message) {
+  // Commands sent in the private chat with the bot. Group settings are managed
+  // here: /panel lists the groups you manage, and the group's "Open settings"
+  // button arrives as /start g<groupId>.
+  async handlePrivate(name, message, args) {
+    const userId = message.from.id;
+
+    if (name === "start" && args.startsWith("g")) {
+      const groupId = -Math.abs(Number(args.slice(1)));
+      if (!Number.isSafeInteger(groupId) || groupId === 0) return this.sendDm(message, "That settings link is invalid.");
+      return this.openDmPanel(message, groupId);
+    }
+
     if (name === "start" || name === "help") {
-      await this.client.sendMessage(
-        message.chat.id,
-        "<b>VaultGC Manager</b>\nAdd me to a group as an admin with delete, restrict, pin and invite rights, " +
-          "then send /panel in the group to configure it.",
+      await this.sendDm(
+        message,
+        "<b>VaultGC Manager</b>\nAdd me to a group as an admin with delete, restrict, pin and invite rights. " +
+          "Then open the group and send /panel, and I will send the settings here.\n" +
+          "Send /panel here to see your groups.",
       );
       return true;
     }
+
+    if (name === "panel") {
+      const groups = this.store
+        .listGroups()
+        .filter((g) => this.permissions.canManageGroup(g.chatId, userId));
+      if (!groups.length) {
+        await this.sendDm(message, SUBSCRIPTION_SOON);
+        return true;
+      }
+      const rows = groups.map((g) => [
+        { text: (g.title || String(g.chatId)).slice(0, 60), callback_data: `pn:${g.chatId}:home:g` },
+      ]);
+      await this.client.sendMessage(message.chat.id, "<b>Your groups</b>\nChoose a group to configure:", {
+        reply_markup: { inline_keyboard: rows },
+      });
+      return true;
+    }
+
     return false;
+  }
+
+  async sendDm(message, text, extra = {}) {
+    return this.client.sendMessage(message.chat.id, text, extra);
+  }
+
+  async openDmPanel(message, groupId) {
+    const userId = message.from.id;
+    if (!this.store.getGroup(groupId)) {
+      return this.sendDm(message, "I have not seen that group yet. Send /panel inside the group first.");
+    }
+    if (!this.permissions.canManageGroup(groupId, userId)) {
+      return this.sendDm(message, SUBSCRIPTION_SOON);
+    }
+    const view = this.panel.render(groupId, "home", this.permissions.isOwner(userId));
+    await this.sendDm(message, view.text, { reply_markup: view.reply_markup });
+    return true;
   }
 
   groupHandlers() {
@@ -215,9 +262,14 @@ export class Commands {
     await this.reply(message, lines.join("\n"), { parse_mode: "HTML" });
   }
 
+  // In a group, /panel only points to the private chat, so settings never
+  // clutter the group. The button opens the bot's DM with the group id.
   async openPanel(message) {
-    const view = this.panel.render(message.chat.id, "home", this.permissions.isOwner(message.from.id));
-    await this.client.sendMessage(message.chat.id, view.text, { reply_markup: view.reply_markup });
+    const me = await this.permissions.me();
+    const link = `https://t.me/${me.username}?start=g${Math.abs(message.chat.id)}`;
+    await this.reply(message, "Settings are kept in a private chat with me. Tap the button below to open them.", {
+      reply_markup: { inline_keyboard: [[{ text: "⚙ Open settings", url: link }]] },
+    });
   }
 
   async targetAction(message, args, kind) {
@@ -405,7 +457,7 @@ const HELP_TEXT = [
   "/promote /demote — reply or pass a user ID",
   "/setrules &lt;text&gt; /rules",
   "/id /info — inspect a user or chat",
-  "/panel — open the inline admin panel",
+  "/panel — open settings in a private chat with me",
   "/status — check activation, rights and privacy mode (super admins)",
   "/plan — plan status · /claim — claim the free plan (group owner)",
 ].join("\n");

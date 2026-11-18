@@ -103,16 +103,28 @@ export class Bot {
     const chatId = query.message?.chat?.id;
 
     if (data.startsWith("pn:")) {
+      // Settings live in the admin's private chat with the bot. The group id is
+      // in the callback data, so the panel can be edited from anywhere.
+      if (query.message?.chat?.type !== "private") {
+        return this.client.answerCallbackQuery(
+          query.id,
+          "Settings open in a private chat with the bot. Use the Open settings button from /panel.",
+          true,
+        );
+      }
+      const groupId = Number(data.split(":")[1]);
       const result = await this.panel.handleCallback(query);
       if (result.alert) return this.client.answerCallbackQuery(query.id, result.alert, true);
       if (result.prompt) {
         await this.client.answerCallbackQuery(query.id);
-        return this.client.sendMessage(chatId, `${mention(query.from)}: ${result.prompt}\nSend /cancel to abort.`);
+        return this.client.sendMessage(query.from.id, `${result.prompt}\nSend /cancel to abort.`);
       }
       await this.client.answerCallbackQuery(query.id, result.alert ?? "");
-      if (result.screen && query.message) {
-        const view = this.panel.render(chatId, result.screen, this.permissions.isOwner(query.from.id));
-        await this.client.editMessageText(chatId, query.message.message_id, view.text, { reply_markup: view.reply_markup });
+      if (result.screen) {
+        const view = this.panel.render(groupId, result.screen, this.permissions.isOwner(query.from.id));
+        await this.client.editMessageText(query.message.chat.id, query.message.message_id, view.text, {
+          reply_markup: view.reply_markup,
+        });
       }
       return;
     }
@@ -159,18 +171,6 @@ export class Bot {
       return;
     }
 
-    // A super admin answering a pending prompt (e.g. "send the banned word").
-    if (message.from && this.permissions.canManageGroup(message.chat.id, message.from.id)) {
-      const confirmation = await this.panel.handleInput(message);
-      if (confirmation !== null) {
-        await this.client.sendMessage(message.chat.id, confirmation, {
-          reply_to_message_id: message.message_id,
-          allow_sending_without_reply: true,
-        });
-        return;
-      }
-    }
-
     if (await this.commands.handle(message)) return;
     await this.pipeline.handle(message);
   }
@@ -183,6 +183,9 @@ export class Bot {
       }
       return this.sendOwnerPanel(message.from.id);
     }
+    // A pending settings prompt (e.g. "send the banned word") is answered here.
+    const confirmation = await this.panel.handleInput(message);
+    if (confirmation !== null) return this.client.sendMessage(message.chat.id, confirmation);
     return this.commands.handle(message);
   }
 

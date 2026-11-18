@@ -72,23 +72,26 @@ function emojiPromptFor(code) {
   return `Send an emoji for ${EMOJI_SLOTS[slot].label}: a premium emoji (needs Telegram Premium) or a normal one. Send /cancel to abort.`;
 }
 
+// Text prompts are answered in the admin's private chat with the bot, so the
+// pending entry is keyed by user and remembers which group it edits.
 export class PendingInputs {
   constructor(now = () => Date.now()) {
     this.now = now;
     this.map = new Map();
   }
-  set(chatId, userId, code) {
-    this.map.set(`${chatId}:${userId}`, { code, exp: this.now() + INPUT_TTL_MS });
+  set(userId, code, groupId) {
+    this.map.set(userId, { code, groupId, exp: this.now() + INPUT_TTL_MS });
   }
-  take(chatId, userId) {
-    const key = `${chatId}:${userId}`;
-    const entry = this.map.get(key);
-    this.map.delete(key);
-    if (!entry || entry.exp < this.now()) return null;
-    return entry.code;
+  peek(userId) {
+    const entry = this.map.get(userId);
+    if (!entry || entry.exp < this.now()) {
+      this.map.delete(userId);
+      return null;
+    }
+    return entry;
   }
-  clear(chatId, userId) {
-    this.map.delete(`${chatId}:${userId}`);
+  clear(userId) {
+    this.map.delete(userId);
   }
 }
 
@@ -162,7 +165,7 @@ export class Panel {
     if (op === "i") {
       const prompt = INPUT[code] ?? emojiPromptFor(code);
       if (!prompt) return { alert: "Unknown input." };
-      this.inputs.set(chatId, actor.id, code);
+      this.inputs.set(actor.id, code, chatId);
       return { prompt };
     }
 
@@ -192,16 +195,24 @@ export class Panel {
     return { alert: "Unsupported action." };
   }
 
-  // Applies a text message the admin sent in reply to a pending prompt.
-  // Returns a confirmation string, or null if the message is not for a prompt.
+  // Applies a text message the admin sent in their private chat with the bot
+  // to the group of the pending prompt. Returns a confirmation string, or null
+  // if the message is not for a prompt (other slash commands pass through).
   async handleInput(message) {
-    const chatId = message.chat.id;
     const userId = message.from.id;
     const text = (message.text ?? "").trim();
-    const code = this.inputs.take(chatId, userId);
-    if (!code) return null;
+    const pending = this.inputs.peek(userId);
+    if (!pending) return null;
+    if (text.startsWith("/") && text.toLowerCase() !== "/cancel") return null;
 
+    this.inputs.clear(userId);
     if (text.toLowerCase() === "/cancel") return "Cancelled.";
+
+    const chatId = pending.groupId;
+    const code = pending.code;
+    if (!this.permissions.canManageGroup(chatId, userId)) {
+      return "You no longer manage this group, so the change was not saved.";
+    }
     if (!text) {
       return "Empty input ignored. Open the panel and try again.";
     }

@@ -208,7 +208,7 @@ test("non-super-admins cannot operate the panel; they see the subscription messa
       id: "cb3",
       from: { id: SPAMMER },
       data: `pn:${group.id}:flood:t:fl`,
-      message: { chat: group, message_id: 4 },
+      message: { chat: { id: SPAMMER, type: "private" }, message_id: 4 },
     },
   });
 
@@ -226,7 +226,7 @@ test("a super admin toggles a setting from the panel and the change persists", a
       id: "cb4",
       from: { id: SUPER },
       data: `pn:${group.id}:flood:t:fl`,
-      message: { chat: group, message_id: 4 },
+      message: { chat: { id: SUPER, type: "private" }, message_id: 4 },
     },
   });
 
@@ -237,9 +237,13 @@ test("a super admin toggles a setting from the panel and the change persists", a
 test("a banned word typed by a super admin during a prompt is saved, not moderated", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
-  bot.inputs.set(group.id, SUPER, "ai");
+  bot.inputs.set(SUPER, "ai", group.id);
 
-  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "casino royale"));
+  // The admin types the word in their private chat with the bot.
+  await bot.handleUpdate({
+    update_id: 77,
+    message: { message_id: 11, chat: { id: SUPER, type: "private" }, from: { id: SUPER, first_name: "Boss" }, text: "casino royale" },
+  });
 
   assert.deepEqual(bot.store.listWords(group.id), ["casino royale"]);
   assert.equal(tg.calls.some((c) => c.method === "deleteMessage"), false);
@@ -297,6 +301,46 @@ test("/status is refused for normal members", async () => {
   const bot = makeBot(tg);
 
   await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/status"));
+
+  assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
+});
+
+test("/panel in a group only sends a button that opens settings in a private chat", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "/panel"));
+
+  const sent = lastSent(tg).params;
+  assert.match(sent.text, /private chat/);
+  assert.equal(sent.reply_markup.inline_keyboard[0][0].url, "https://t.me/vaultbot?start=g1001");
+  assert.equal(tg.calls.some((c) => c.method === "editMessageText"), false);
+});
+
+test("deep link /start g<id> opens the group's settings in the admin's private chat", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 78,
+    message: { message_id: 12, chat: { id: SUPER, type: "private" }, from: { id: SUPER, first_name: "Boss" }, text: "/start g1001" },
+  });
+
+  const sent = lastSent(tg).params;
+  assert.equal(sent.chat_id, SUPER);
+  assert.match(sent.text, /Admin panel/);
+  assert.match(sent.text, /Test Group/);
+  assert.ok(JSON.stringify(sent.reply_markup).includes(`pn:${group.id}:`));
+});
+
+test("a non-admin following the settings link gets the subscription message, not the panel", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 79,
+    message: { message_id: 13, chat: { id: SPAMMER, type: "private" }, from: { id: SPAMMER, first_name: "Member" }, text: "/start g1001" },
+  });
 
   assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
 });

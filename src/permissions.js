@@ -43,9 +43,14 @@ export class PermissionService {
     return value;
   }
 
+  // The bot's own user record (cached after the first call).
+  async me() {
+    return this.botUser ?? (this.botUser = await this.client.getMe());
+  }
+
   // Returns the bot's own rights in a chat, or null if it is not an admin.
   async botRights(chatId) {
-    const me = this.botUser ?? (this.botUser = await this.client.getMe());
+    const me = await this.me();
     try {
       const member = await this.client.getChatMember(chatId, me.id);
       if (member.status !== "administrator" && member.status !== "creator") return null;

@@ -77,7 +77,7 @@ test("admin sets a premium emoji for a slot from the panel; a normal emoji is re
   const rejected = await panel.handleInput({ chat: { id: -7 }, from: { id: 1 }, text: "hello", entities: [] });
   assert.match(rejected, /Send an emoji/);
   // The prompt is consumed by the first message, so re-arm for the real test.
-  inputs.set(-7, 1, "e_ok");
+  inputs.set(1, "e_ok", -7);
 
   const accepted = await panel.handleInput({
     chat: { id: -7 },
@@ -89,7 +89,7 @@ test("admin sets a premium emoji for a slot from the panel; a normal emoji is re
   assert.equal(store.getSettings(-7).emoji.ok, "5368324170671202286");
 
   // A normal emoji is accepted too.
-  inputs.set(-7, 1, "e_off");
+  inputs.set(1, "e_off", -7);
   const normal = await panel.handleInput({ chat: { id: -7 }, from: { id: 1 }, text: "🔥", entities: [] });
   assert.match(normal, /now uses/);
   assert.equal(store.getSettings(-7).emoji.off, "🔥");
@@ -104,7 +104,7 @@ test("welcome input from an admin is stored as HTML with formatting kept", async
   const permissions = new PermissionService({ client: {}, ownerIds: [1] });
   const inputs = new PendingInputs();
   const panel = new Panel({ client: {}, store, permissions, inputs });
-  inputs.set(-8, 1, "wt");
+  inputs.set(1, "wt", -8);
 
   await panel.handleInput({
     chat: { id: -8 },
