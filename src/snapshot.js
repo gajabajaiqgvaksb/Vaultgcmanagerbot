@@ -17,22 +17,36 @@ export class PostgresSnapshot {
     this.url = url;
     this.intervalMs = intervalMs;
     this.log = log;
+    this.pg = null;
     this.client = null;
     this.timer = null;
     this.lastSaved = null;
   }
 
+  // Opens a connection and makes sure the table exists. If the connection
+  // later drops, the error handler clears it so the next save reconnects,
+  // instead of the process crashing on an unhandled 'error' event.
+  async connect() {
+    this.pg ??= (await import("pg")).default;
+    const client = new this.pg.Client({ connectionString: this.url, ssl: { rejectUnauthorized: false } });
+    client.on("error", (err) => {
+      this.log.error("Postgres connection lost:", err.message);
+      if (this.client === client) this.client = null;
+    });
+    await client.connect();
+    await client.query(TABLE_SQL);
+    this.client = client;
+    return client;
+  }
+
   // Connects, restores the last snapshot into the store, and starts the save loop.
   async start() {
-    const { default: pg } = await import("pg");
-    this.client = new pg.Client({ connectionString: this.url, ssl: { rejectUnauthorized: false } });
-    await this.client.connect();
-    await this.client.query(TABLE_SQL);
+    await this.connect();
 
     const res = await this.client.query("SELECT data FROM bot_snapshot WHERE id = 1");
     if (res.rows.length) {
       this.store.importAll(res.rows[0].data);
-      this.log.log(`Restored settings from Postgres snapshot.`);
+      this.log.log("Restored settings from Postgres snapshot.");
     } else {
       this.log.log("No Postgres snapshot yet; starting fresh.");
     }
@@ -46,7 +60,7 @@ export class PostgresSnapshot {
 
   // Saves only when something changed since the last save.
   async flush() {
-    if (!this.client) return;
+    if (!this.client) await this.connect();
     const json = JSON.stringify(this.store.exportAll());
     if (json === this.lastSaved) return;
     await this.client.query(
