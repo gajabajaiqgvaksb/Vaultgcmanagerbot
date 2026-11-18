@@ -344,3 +344,22 @@ test("a non-admin following the settings link gets the subscription message, not
 
   assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
 });
+
+test("when a group is upgraded to a supergroup, its settings and rules move to the new chat id", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  bot.store.setRules(group.id, "Old rules");
+
+  await bot.handleUpdate({
+    update_id: 80,
+    message: {
+      message_id: 14,
+      chat: { id: -1009, type: "supergroup", title: "Test Group" },
+      from: { id: SUPER, first_name: "Boss" },
+      migrate_from_chat_id: group.id,
+    },
+  });
+
+  assert.equal(bot.store.getGroup(-1009).rules, "Old rules");
+  assert.equal(bot.store.isActive(-1009), true);
+});

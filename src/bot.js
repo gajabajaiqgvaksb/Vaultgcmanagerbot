@@ -53,6 +53,11 @@ export class Bot {
       // One bad update must never stop the polling loop.
       const where = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id ?? "?";
       console.error(`[update ${update.update_id}] chat ${where}:`, err instanceof TelegramError ? err.message : err);
+      // Private chats have no other feedback, so tell the admin something went wrong.
+      const chat = update.message?.chat ?? update.callback_query?.message?.chat;
+      if (chat?.type === "private") {
+        await this.client.sendMessage(chat.id, "Something went wrong. Please try again.").catch(() => {});
+      }
     }
   }
 
@@ -161,6 +166,13 @@ export class Bot {
   async onMessage(message) {
     if (message.chat.type === "private") return this.onPrivate(message);
 
+    // A basic group was upgraded to a supergroup and got a new chat id:
+    // carry its settings over, otherwise the new chat starts empty.
+    if (message.migrate_from_chat_id) {
+      this.migrateGroup(message.migrate_from_chat_id, message.chat.id, message.chat.title ?? "");
+      return;
+    }
+
     // Member joins: welcome them if enabled.
     if (message.new_chat_members?.length) {
       await this.welcome(message);
@@ -202,6 +214,17 @@ export class Bot {
         reply_markup: welcomeKeyboard(settings, Boolean(group?.rules)),
       });
     }
+  }
+
+  // Copies settings, rules and admins from an old group id to its new supergroup id.
+  migrateGroup(oldId, newId, title) {
+    const old = this.store.getGroup(oldId);
+    if (!old) return;
+    this.store.ensureGroup(newId, title || old.title);
+    this.store.saveSettings(newId, old.settings);
+    this.store.setRules(newId, old.rules);
+    for (const userId of this.store.listAdmins(oldId)) this.store.addAdmin(newId, userId);
+    this.store.log(newId, "group_migrated", { detail: `from ${oldId}` });
   }
 
   async sendOwnerPanel(userId) {
