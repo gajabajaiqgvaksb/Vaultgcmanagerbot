@@ -305,16 +305,54 @@ test("/status is refused for normal members", async () => {
   assert.equal(lastSent(tg).params.text, SUBSCRIPTION_SOON);
 });
 
-test("/panel in a group only sends a button that opens settings in a private chat", async () => {
+test("/panel in a group opens the admin panel directly in the group", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);
 
   await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "/panel"));
 
   const sent = lastSent(tg).params;
-  assert.match(sent.text, /private chat/);
-  assert.equal(sent.reply_markup.inline_keyboard[0][0].url, "https://t.me/vaultbot?start=g1001");
-  assert.equal(tg.calls.some((c) => c.method === "editMessageText"), false);
+  assert.equal(sent.chat_id, group.id);
+  assert.match(sent.text, /Admin panel/);
+});
+
+test("a panel button pressed in the group toggles the setting in place, no DM needed", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 90,
+    callback_query: {
+      id: "cb90",
+      from: { id: SUPER },
+      data: `pn:${group.id}:flood:t:fl`,
+      message: { chat: group, message_id: 4 },
+    },
+  });
+
+  assert.equal(bot.store.getSettings(group.id).flood.enabled, false);
+  assert.ok(tg.calls.some((c) => c.method === "editMessageText"), "panel re-rendered in the group");
+});
+
+test("a text prompt from the group panel is sent to the admin's DM, and typing the answer in the group still works", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 91,
+    callback_query: {
+      id: "cb91",
+      from: { id: SUPER },
+      data: `pn:${group.id}:words:i:ai`,
+      message: { chat: group, message_id: 4 },
+    },
+  });
+  assert.match(lastSent(tg).params.text, /banned word/);
+  assert.equal(lastSent(tg).params.chat_id, SUPER, "prompt goes to the admin's DM");
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "casino royale"));
+
+  assert.deepEqual(bot.store.listWords(group.id), ["casino royale"]);
 });
 
 test("deep link /start g<id> opens the group's settings in the admin's private chat", async () => {
@@ -362,4 +400,50 @@ test("when a group is upgraded to a supergroup, its settings and rules move to t
 
   assert.equal(bot.store.getGroup(-1009).rules, "Old rules");
   assert.equal(bot.store.isActive(-1009), true);
+});
+
+test("enabling welcome from the panel makes the bot greet a new member", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  // welcome.enabled is off by default: toggle it on through the panel, in the group.
+  await bot.handleUpdate({
+    update_id: 92,
+    callback_query: {
+      id: "cb92",
+      from: { id: SUPER },
+      data: `pn:${group.id}:welcome:t:wc`,
+      message: { chat: group, message_id: 4 },
+    },
+  });
+  assert.equal(bot.store.getSettings(group.id).welcome.enabled, true);
+
+  await bot.handleUpdate({
+    update_id: 93,
+    message: {
+      message_id: 20,
+      chat: group,
+      new_chat_members: [{ id: 42, first_name: "Newbie", is_bot: false }],
+    },
+  });
+
+  const welcomeMsg = tg.calls.filter((c) => c.method === "sendMessage").pop();
+  assert.equal(welcomeMsg.params.chat_id, group.id);
+  assert.match(welcomeMsg.params.text, /Newbie/);
+});
+
+test("welcome stays off until explicitly enabled, even once a group is active", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 94,
+    message: {
+      message_id: 21,
+      chat: group,
+      new_chat_members: [{ id: 43, first_name: "Quiet", is_bot: false }],
+    },
+  });
+
+  assert.equal(tg.calls.some((c) => c.method === "sendMessage" && /Quiet/.test(c.params.text ?? "")), false);
 });

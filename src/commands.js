@@ -262,14 +262,12 @@ export class Commands {
     await this.reply(message, lines.join("\n"), { parse_mode: "HTML" });
   }
 
-  // In a group, /panel only points to the private chat, so settings never
-  // clutter the group. The button opens the bot's DM with the group id.
+  // /panel opens the admin panel directly in the group, same as every other
+  // admin command. It can also be opened from a private chat with the bot
+  // (see handlePrivate), which is handy when the group chat is noisy.
   async openPanel(message) {
-    const me = await this.permissions.me();
-    const link = `https://t.me/${me.username}?start=g${Math.abs(message.chat.id)}`;
-    await this.reply(message, "Settings are kept in a private chat with me. Tap the button below to open them.", {
-      reply_markup: { inline_keyboard: [[{ text: "⚙ Open settings", url: link }]] },
-    });
+    const view = this.panel.render(message.chat.id, "home", this.permissions.isOwner(message.from.id));
+    await this.client.sendMessage(message.chat.id, view.text, { reply_markup: view.reply_markup });
   }
 
   async targetAction(message, args, kind) {

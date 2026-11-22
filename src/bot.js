@@ -108,24 +108,25 @@ export class Bot {
     const chatId = query.message?.chat?.id;
 
     if (data.startsWith("pn:")) {
-      // Settings live in the admin's private chat with the bot. The group id is
-      // in the callback data, so the panel can be edited from anywhere.
-      if (query.message?.chat?.type !== "private") {
-        return this.client.answerCallbackQuery(
-          query.id,
-          "Settings open in a private chat with the bot. Use the Open settings button from /panel.",
-          true,
-        );
-      }
+      // Works both in the group (the panel message lives there) and in a
+      // private chat with the bot (the group id travels in the callback data).
       const groupId = Number(data.split(":")[1]);
       const result = await this.panel.handleCallback(query);
       if (result.alert) return this.client.answerCallbackQuery(query.id, result.alert, true);
       if (result.prompt) {
         await this.client.answerCallbackQuery(query.id);
-        return this.client.sendMessage(query.from.id, `${result.prompt}\nSend /cancel to abort.`);
+        // Text prompts are always answered in a private chat with the bot,
+        // even when the panel button was pressed inside the group, so the
+        // group is not spammed with setup chatter.
+        return this.client.sendMessage(query.from.id, `${result.prompt}\nSend /cancel to abort.`).catch(async () => {
+          await this.client.sendMessage(
+            chatId,
+            `${mention(query.from)}: I could not message you privately. Please start a chat with me first, then press the button again.`,
+          );
+        });
       }
       await this.client.answerCallbackQuery(query.id, result.alert ?? "");
-      if (result.screen) {
+      if (result.screen && query.message) {
         const view = this.panel.render(groupId, result.screen, this.permissions.isOwner(query.from.id));
         await this.client.editMessageText(query.message.chat.id, query.message.message_id, view.text, {
           reply_markup: view.reply_markup,
@@ -181,6 +182,20 @@ export class Bot {
     if (message.left_chat_member || message.new_chat_title) {
       if (message.new_chat_title) this.store.ensureGroup(message.chat.id, message.new_chat_title);
       return;
+    }
+
+    // A super admin answering a pending prompt (e.g. "send the banned word").
+    // Prompts are sent in DM, but typing the answer directly in the group
+    // also works, in case the admin cannot receive DMs from the bot.
+    if (message.from && this.permissions.canManageGroup(message.chat.id, message.from.id)) {
+      const confirmation = await this.panel.handleInput(message);
+      if (confirmation !== null) {
+        await this.client.sendMessage(message.chat.id, confirmation, {
+          reply_to_message_id: message.message_id,
+          allow_sending_without_reply: true,
+        });
+        return;
+      }
     }
 
     if (await this.commands.handle(message)) return;
