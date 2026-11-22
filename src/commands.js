@@ -69,33 +69,47 @@ export class Commands {
     }
 
     if (name === "start" || name === "help") {
+      const me = await this.permissions.me();
       await this.sendDm(
         message,
-        "<b>VaultGC Manager</b>\nAdd me to a group as an admin with delete, restrict, pin and invite rights. " +
-          "Then open the group and send /panel, and I will send the settings here.\n" +
-          "Send /panel here to see your groups.",
+        "<b>⚡ VaultGC Manager</b>\n" +
+          "Group moderation, warnings, welcome messages and a subscription — all in one bot.\n\n" +
+          "Add me to a group as an admin (delete, restrict, pin and invite rights), then send /panel there to set it up.",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "➕ Add me to a group", url: `https://t.me/${me.username}?startgroup=true` }],
+              [
+                { text: "📋 My groups", callback_data: "dm:mygroups" },
+                { text: "💳 Subscription", callback_data: "dm:plan" },
+              ],
+            ],
+          },
+        },
       );
       return true;
     }
 
     if (name === "panel") {
-      const groups = this.store
-        .listGroups()
-        .filter((g) => this.permissions.canManageGroup(g.chatId, userId));
-      if (!groups.length) {
-        await this.sendDm(message, SUBSCRIPTION_SOON);
-        return true;
-      }
-      const rows = groups.map((g) => [
-        { text: (g.title || String(g.chatId)).slice(0, 60), callback_data: `pn:${g.chatId}:home:g` },
-      ]);
-      await this.client.sendMessage(message.chat.id, "<b>Your groups</b>\nChoose a group to configure:", {
-        reply_markup: { inline_keyboard: rows },
-      });
+      const view = await this.myGroupsView(userId);
+      await this.client.sendMessage(message.chat.id, view.text, { reply_markup: view.reply_markup });
       return true;
     }
 
     return false;
+  }
+
+  // The "📋 My groups" list: every group this user (super admin or claimed
+  // owner) may configure, as buttons that open that group's panel.
+  async myGroupsView(userId) {
+    const groups = this.store.listGroups().filter((g) => this.permissions.canManageGroup(g.chatId, userId));
+    if (!groups.length) {
+      return { text: SUBSCRIPTION_SOON, reply_markup: undefined };
+    }
+    const rows = groups.map((g) => [
+      { text: (g.title || String(g.chatId)).slice(0, 60), callback_data: `pn:${g.chatId}:home:g` },
+    ]);
+    return { text: "<b>📋 Your groups</b>\nChoose a group to configure:", reply_markup: { inline_keyboard: rows } };
   }
 
   async sendDm(message, text, extra = {}) {

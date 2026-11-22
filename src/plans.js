@@ -28,9 +28,10 @@ export function lockedFeatures(settings) {
 export const PAID_PLAN_TEXT = "Paid plan: coming soon. It will unlock premium emojis, templates and advanced settings.";
 
 export class FreePlan {
-  constructor({ store, forceSub, channel }) {
+  constructor({ store, forceSub, permissions, channel }) {
     this.store = store;
     this.forceSub = forceSub;
+    this.permissions = permissions;
     this.channel = channel || "";
   }
 
@@ -42,14 +43,15 @@ export class FreePlan {
     return `https://t.me/${this.channel.replace(/^@/, "")}`;
   }
 
-  // Returns { ok, text }. Only the group's owner can claim, and only after
-  // they have joined the channel.
+  // Returns { ok, text }. Only a current admin of the group can claim it (any
+  // admin, not just whoever added the bot), and only after they have joined
+  // the channel.
   async claim(chatId, userId) {
     if (!this.enabled) {
       return { ok: false, text: "The free plan is not available right now." };
     }
-    if (this.store.ownerIdOf(chatId) !== userId) {
-      return { ok: false, text: "Only the person who added this bot can claim the free plan." };
+    if (!(await this.permissions.isGroupAdmin(chatId, userId))) {
+      return { ok: false, text: "Only an admin of this group can activate the subscription." };
     }
     const settings = this.store.getSettings(chatId);
     if (settings.subscription.plan === "free" && this.store.isActive(chatId)) {
@@ -74,6 +76,7 @@ export class FreePlan {
     }
 
     this.store.setActive(chatId, true);
+    this.store.setOwner(chatId, userId); // the claiming admin becomes the manager
     const s = this.store.getSettings(chatId);
     s.subscription.plan = "free";
     this.store.saveSettings(chatId, s);

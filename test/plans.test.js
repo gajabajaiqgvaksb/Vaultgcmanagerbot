@@ -9,8 +9,10 @@ const OWNER = 50;
 const OTHER = 60;
 const CHANNEL = "@freechan";
 
-// Fake Telegram: `joined` lists users who are members of the free-plan channel.
-function fakeTelegram(joined = new Set()) {
+// Fake Telegram: `joined` lists users who are members of the free-plan channel,
+// `groupAdmins` lists users who are Telegram admins of the group chats
+// (defaults to OWNER, matching "the person who added the bot" in most tests).
+function fakeTelegram(joined = new Set(), groupAdmins = new Set([OWNER])) {
   const calls = [];
   let msgId = 700;
   const fetchImpl = async (url, opts) => {
@@ -27,7 +29,7 @@ function fakeTelegram(joined = new Set()) {
         return ok({ status: joined.has(params.user_id) ? "member" : "left", user: { id: params.user_id } });
       }
       if (params.user_id === SUPER) return ok({ status: "administrator", user: { id: SUPER } });
-      return ok({ status: "member", user: { id: params.user_id } });
+      return ok({ status: groupAdmins.has(params.user_id) ? "administrator" : "member", user: { id: params.user_id } });
     }
     if (method === "sendMessage") return ok({ message_id: msgId++ });
     return ok(true);
@@ -99,15 +101,26 @@ test("after joining the channel the owner claims the free plan and can manage th
   assert.equal(bot.permissions.canManageGroup(group.id, OWNER), true);
 });
 
-test("only the person who added the bot can claim", async () => {
-  const tg = fakeTelegram(new Set([OWNER, OTHER]));
+test("a non-admin member cannot claim the subscription", async () => {
+  const tg = fakeTelegram(new Set([OWNER, OTHER])); // OTHER joined the channel but is not a group admin
   const bot = makeBot(tg);
   await addBot(bot, group, OWNER);
 
   await claimPress(bot, group, { id: OTHER });
 
   assert.equal(bot.store.isActive(group.id), false);
-  assert.match(lastAnswer(tg).params.text, /Only the person who added/);
+  assert.match(lastAnswer(tg).params.text, /Only an admin of this group/);
+});
+
+test("any current admin of the group can claim it, not just whoever added the bot", async () => {
+  const tg = fakeTelegram(new Set([OTHER]), new Set([OWNER, OTHER])); // OTHER is an admin, OWNER added the bot
+  const bot = makeBot(tg);
+  await addBot(bot, group, OWNER);
+
+  await claimPress(bot, group, { id: OTHER });
+
+  assert.equal(bot.store.isActive(group.id), true);
+  assert.equal(bot.permissions.canManageGroup(group.id, OTHER), true, "the claiming admin becomes the manager");
 });
 
 test("one free group per person", async () => {

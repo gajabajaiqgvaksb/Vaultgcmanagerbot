@@ -22,7 +22,7 @@ export function createBot(config, { fetchImpl, dbPath } = {}) {
   const pipeline = new ModerationPipeline({ client, store, permissions, enforcer, forceSub });
   const inputs = new PendingInputs();
   const panel = new Panel({ client, store, permissions, inputs });
-  const freePlan = new FreePlan({ store, forceSub, channel: config.freePlanChannel });
+  const freePlan = new FreePlan({ store, forceSub, permissions, channel: config.freePlanChannel });
   const commands = new Commands({ client, store, permissions, enforcer, panel, freePlan });
   return new Bot({ client, store, permissions, pipeline, commands, panel, inputs, forceSub, freePlan, config });
 }
@@ -157,6 +157,26 @@ export class Bot {
       await this.client.answerCallbackQuery(query.id, res.text, !res.ok);
       if (res.ok) await this.client.sendMessage(chatId, esc(res.text));
       return;
+    }
+
+    if (data === "dm:mygroups") {
+      const view = await this.commands.myGroupsView(query.from.id);
+      await this.client.answerCallbackQuery(query.id);
+      return this.client.sendMessage(query.message.chat.id, view.text, { reply_markup: view.reply_markup });
+    }
+
+    if (data === "dm:plan") {
+      await this.client.answerCallbackQuery(query.id);
+      const lines = [
+        "<b>💳 Subscription</b>",
+        this.freePlan.enabled
+          ? `Free plan: join ${esc(this.freePlan.channel)}, then an admin of the group sends /claim (or taps I JOINED). One free group per person.`
+          : "Free plan: not available right now.",
+        "Only a current admin of the group can activate its subscription.",
+        "Free plan locks: premium emojis, templates, advanced warning/flood thresholds.",
+        "Paid plan: coming soon — it will unlock everything above.",
+      ];
+      return this.client.sendMessage(query.message.chat.id, lines.join("\n"));
     }
 
     if (data === "rules:show") {

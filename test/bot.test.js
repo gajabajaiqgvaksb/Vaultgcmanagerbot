@@ -472,3 +472,55 @@ test("welcome stays off until explicitly enabled, even once a group is active", 
 
   assert.equal(tg.calls.some((c) => c.method === "sendMessage" && /Quiet/.test(c.params.text ?? "")), false);
 });
+
+test("/start in a private chat shows an Add-to-group, My groups, and Subscription button", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 95,
+    message: { message_id: 22, chat: { id: SUPER, type: "private" }, from: { id: SUPER, first_name: "Boss" }, text: "/start" },
+  });
+
+  const sent = lastSent(tg).params;
+  const buttons = sent.reply_markup.inline_keyboard.flat();
+  assert.ok(buttons.some((b) => b.url === "https://t.me/vaultbot?startgroup=true"), "Add me to a group button");
+  assert.ok(buttons.some((b) => b.callback_data === "dm:mygroups"), "My groups button");
+  assert.ok(buttons.some((b) => b.callback_data === "dm:plan"), "Subscription button");
+});
+
+test("the My groups button lists groups the admin manages, pressed from the private chat", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 96,
+    callback_query: {
+      id: "cb96",
+      from: { id: SUPER },
+      data: "dm:mygroups",
+      message: { chat: { id: SUPER, type: "private" }, message_id: 23 },
+    },
+  });
+
+  const sent = lastSent(tg).params;
+  assert.match(sent.text, /Your groups/);
+  assert.ok(JSON.stringify(sent.reply_markup).includes(`pn:${group.id}:`));
+});
+
+test("the Subscription button explains the free plan and the admin-only rule", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate({
+    update_id: 97,
+    callback_query: {
+      id: "cb97",
+      from: { id: SUPER },
+      data: "dm:plan",
+      message: { chat: { id: SUPER, type: "private" }, message_id: 24 },
+    },
+  });
+
+  assert.match(lastSent(tg).params.text, /admin of the group can activate/);
+});
