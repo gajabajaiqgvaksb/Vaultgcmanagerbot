@@ -196,6 +196,31 @@ test("I SUBSCRIBED succeeds once Telegram confirms membership", async () => {
   });
   assert.match(lastAnswer(tg).params.text, /confirmed/);
   assert.equal(lastAnswer(tg).params.show_alert, false);
+  const del = tg.calls.filter((c) => c.method === "deleteMessage").pop();
+  assert.deepEqual(del.params, { chat_id: group.id, message_id: 3 }, "the gate message is cleared once subscribed");
+});
+
+test("the banned-word warning shows the admin's configured emoji", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.emoji.warn = "🔥";
+  bot.store.saveSettings(group.id, s);
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Spam" }, "free money free money"));
+  assert.match(lastSent(tg).params.text, /^🔥 /, "banned-word warning uses the configured emoji");
+});
+
+test("the force-subscribe gate message shows the admin's configured emoji", async () => {
+  const tg = fakeTelegram({ memberStatus: { [SPAMMER]: false } });
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.emoji.channel = "📢";
+  s.forceSubscribe = { enabled: true, channel: CHANNEL };
+  bot.store.saveSettings(group.id, s);
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Spam" }, "hello"));
+  assert.match(lastSent(tg).params.text, /^📢 /, "gate message uses the configured emoji");
 });
 
 test("non-super-admins cannot operate the panel; they see the subscription message", async () => {

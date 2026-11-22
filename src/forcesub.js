@@ -3,6 +3,7 @@
 // cached, for a short time, so an unsubscribed user is always re-checked.
 
 import { esc, mention } from "./util.js";
+import { emojiHtml } from "./emoji.js";
 
 const POSITIVE_CACHE_MS = 120_000;
 const JOINED = new Set(["member", "administrator", "creator"]);
@@ -34,11 +35,11 @@ export class ForceSubscribe {
   }
 
   // Builds the gate message sent when an unsubscribed user writes.
-  gateMessage(user, channel) {
+  gateMessage(user, channel, emoji = {}) {
     const handle = channel.startsWith("@") ? channel : `@${channel}`;
     return {
       text:
-        `${mention(user)}, you must join ${esc(handle)} before you can post in this group.\n` +
+        `${emojiHtml("channel", emoji)} ${mention(user)}, you must join ${esc(handle)} before you can post in this group.\n` +
         `Join the channel, then tap <b>I SUBSCRIBED</b>.`,
       reply_markup: {
         inline_keyboard: [

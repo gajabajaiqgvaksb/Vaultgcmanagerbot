@@ -5,6 +5,7 @@ import { TelegramError } from "./telegram.js";
 import { FULL_PERMISSIONS, NO_PERMISSIONS } from "./enforce.js";
 import { esc, mention, parseDuration, parseUserRef, SUBSCRIPTION_SOON } from "./util.js";
 import { FEATURES, lockedFeatures, PAID_PLAN_TEXT } from "./plans.js";
+import { emojiHtml } from "./emoji.js";
 
 // Commands any user may run to claim or check a plan (they check ownership themselves).
 const PLAN_COMMANDS = new Set(["claim", "plan"]);
@@ -286,7 +287,9 @@ export class Commands {
     if (kind === "unmute") await this.enforcer.unmute(chatId, user.id, opts);
 
     const verbs = { ban: "banned", unban: "unbanned", kick: "kicked", unmute: "unmuted" };
-    await this.reply(message, `${who} has been ${verbs[kind]}.`, { parse_mode: "HTML" });
+    const icons = { ban: "ban", unban: "ok", kick: "ban", unmute: "ok" };
+    const icon = emojiHtml(icons[kind], this.store.getSettings(chatId).emoji);
+    await this.reply(message, `${icon} ${who} has been ${verbs[kind]}.`, { parse_mode: "HTML" });
   }
 
   async muteCmd(message, args) {
@@ -299,7 +302,8 @@ export class Commands {
     const hasDuration = parseDuration(durToken ?? "") !== null;
     const reason = (hasDuration ? reasonParts : [durToken, ...reasonParts].filter(Boolean)).join(" ");
     await this.enforcer.mute(message.chat.id, user.id, minutes, { actorId: message.from.id, reason });
-    await this.reply(message, `${mention(user)} muted for ${minutes} minute(s).`, { parse_mode: "HTML" });
+    const icon = emojiHtml("shield", this.store.getSettings(message.chat.id).emoji);
+    await this.reply(message, `${icon} ${mention(user)} muted for ${minutes} minute(s).`, { parse_mode: "HTML" });
   }
 
   async warnCmd(message, args) {
@@ -314,7 +318,8 @@ export class Commands {
     const tail = result.actioned
       ? ` Limit reached: applied <b>${result.actioned}</b>.`
       : "";
-    await this.reply(message, `${mention(user)} warned (${result.count}/${result.limit}).${tail}`, { parse_mode: "HTML" });
+    const icon = emojiHtml("warn", this.store.getSettings(message.chat.id).emoji);
+    await this.reply(message, `${icon} ${mention(user)} warned (${result.count}/${result.limit}).${tail}`, { parse_mode: "HTML" });
   }
 
   async unwarnCmd(message, args) {
@@ -382,7 +387,8 @@ export class Commands {
   async rulesCmd(message) {
     const group = this.store.getGroup(message.chat.id);
     const body = group?.rules ? esc(group.rules) : "No rules have been set yet. Admins can use /setrules.";
-    await this.reply(message, `<b>Group rules</b>\n${body}`, { parse_mode: "HTML" });
+    const icon = emojiHtml("rules", group?.settings?.emoji);
+    await this.reply(message, `<b>${icon} Group rules</b>\n${body}`, { parse_mode: "HTML" });
   }
 
   async setRulesCmd(message, args) {

@@ -9,6 +9,7 @@ import { ModerationPipeline } from "./pipeline.js";
 import { Commands } from "./commands.js";
 import { Panel, PendingInputs } from "./panel.js";
 import { renderWelcome, welcomeKeyboard } from "./welcome.js";
+import { emojiHtml } from "./emoji.js";
 import { FreePlan } from "./plans.js";
 import { esc, mention, SUBSCRIPTION_SOON } from "./util.js";
 
@@ -144,7 +145,11 @@ export class Bot {
         pressedBy: query.from.id,
         targetId,
       });
-      return this.client.answerCallbackQuery(query.id, res.alert, !res.ok);
+      await this.client.answerCallbackQuery(query.id, res.alert, !res.ok);
+      // Subscription confirmed: the gate message has done its job, clear it
+      // instead of leaving it cluttering the group.
+      if (res.ok && query.message) await this.client.deleteMessage(query.message.chat.id, query.message.message_id);
+      return;
     }
 
     if (data.startsWith("plan:claim:")) {
@@ -158,7 +163,8 @@ export class Bot {
       const group = this.store.getGroup(chatId);
       await this.client.answerCallbackQuery(query.id);
       const body = group?.rules ? esc(group.rules) : "No rules have been set yet.";
-      return this.client.sendMessage(chatId, `<b>Group rules</b>\n${body}`);
+      const icon = emojiHtml("rules", group?.settings?.emoji);
+      return this.client.sendMessage(chatId, `<b>${icon} Group rules</b>\n${body}`);
     }
 
     return this.client.answerCallbackQuery(query.id);
@@ -222,10 +228,11 @@ export class Bot {
     const settings = this.store.getSettings(chatId);
     if (!settings.welcome.enabled) return;
     const group = this.store.getGroup(chatId);
+    const icon = emojiHtml("welcome", settings.emoji);
     for (const user of message.new_chat_members) {
       if (user.is_bot) continue;
       const text = renderWelcome(settings.welcome.text, { user, groupTitle: group?.title });
-      await this.client.sendMessage(chatId, text, {
+      await this.client.sendMessage(chatId, `${icon} ${text}`, {
         reply_markup: welcomeKeyboard(settings, Boolean(group?.rules)),
       });
     }

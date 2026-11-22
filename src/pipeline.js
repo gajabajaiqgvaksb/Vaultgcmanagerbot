@@ -12,6 +12,7 @@ import {
   checkSuspiciousAccount,
 } from "./moderation.js";
 import { esc, mention } from "./util.js";
+import { emojiHtml } from "./emoji.js";
 
 const RIGHTS_CACHE_MS = 60_000;
 
@@ -69,7 +70,7 @@ export class ModerationPipeline {
       const { joined } = await this.forceSub.isMember(settings.forceSubscribe.channel, user.id, chatId);
       if (!joined) {
         await this.client.deleteMessage(chatId, message.message_id);
-        const gate = this.forceSub.gateMessage(user, settings.forceSubscribe.channel);
+        const gate = this.forceSub.gateMessage(user, settings.forceSubscribe.channel, settings.emoji);
         await this.client.sendMessage(chatId, gate.text, { reply_markup: gate.reply_markup });
         this.store.log(chatId, "forcesub_block", { targetId: user.id });
         return { action: "deleted", rule: "forceSubscribe" };
@@ -107,17 +108,18 @@ export class ModerationPipeline {
     this.store.log(chatId, `delete:${violation.rule}`, { targetId: user.id, detail: violation.reason });
 
     const reason = describeViolation(violation, settings.warnings.revealWordsUpTo);
+    const warnIcon = emojiHtml("warn", settings.emoji);
 
     if (!settings.warnings.enabled) {
-      await this.client.sendMessage(chatId, `${mention(user)}: ${reason}.`);
+      await this.client.sendMessage(chatId, `${warnIcon} ${mention(user)}: ${reason}.`);
       return { action: "deleted", rule: violation.rule };
     }
 
     const result = await this.enforcer.warn(chatId, user.id, { reason: violation.reason });
     const tail = result.actioned
-      ? `Limit reached. Action applied: <b>${result.actioned}</b>.`
+      ? `Limit reached. Action applied: <b>${emojiHtml("ban", settings.emoji)} ${result.actioned}</b>.`
       : `Warning ${result.count}/${result.limit}.`;
-    await this.client.sendMessage(chatId, `${mention(user)}: ${reason}. ${tail}`);
+    await this.client.sendMessage(chatId, `${warnIcon} ${mention(user)}: ${reason}. ${tail}`);
     return { action: "warned", rule: violation.rule, count: result.count };
   }
 }
