@@ -8,9 +8,11 @@ import { ForceSubscribe } from "./forcesub.js";
 import { ModerationPipeline } from "./pipeline.js";
 import { Commands } from "./commands.js";
 import { Panel, PendingInputs } from "./panel.js";
+import { OwnerPanel } from "./ownerpanel.js";
 import { renderWelcome, welcomeKeyboard } from "./welcome.js";
 import { emojiHtml } from "./emoji.js";
 import { FreePlan } from "./plans.js";
+import { notifyLogChannel } from "./logchannel.js";
 import { esc, mention, SUBSCRIPTION_SOON } from "./util.js";
 
 export function createBot(config, { fetchImpl, dbPath } = {}) {
@@ -22,9 +24,10 @@ export function createBot(config, { fetchImpl, dbPath } = {}) {
   const pipeline = new ModerationPipeline({ client, store, permissions, enforcer, forceSub });
   const inputs = new PendingInputs();
   const panel = new Panel({ client, store, permissions, inputs });
+  const ownerPanel = new OwnerPanel({ store });
   const freePlan = new FreePlan({ store, forceSub, permissions, channel: config.freePlanChannel });
   const commands = new Commands({ client, store, permissions, enforcer, panel, freePlan });
-  return new Bot({ client, store, permissions, pipeline, commands, panel, inputs, forceSub, freePlan, config });
+  return new Bot({ client, store, permissions, pipeline, commands, panel, ownerPanel, inputs, forceSub, freePlan, config });
 }
 
 export class Bot {
@@ -65,12 +68,31 @@ export class Bot {
   async onMyChatMember(update) {
     const chat = update.chat;
     if (chat.type === "private") return;
-    const added = ["member", "administrator"].includes(update.new_chat_member.status);
-    if (!added) return;
+    const status = update.new_chat_member.status;
+    const added = ["member", "administrator"].includes(status);
+
+    if (!added) {
+      // The bot was removed (kicked or left): stop moderating this chat, and
+      // let the owner know if anyone is watching the log channel.
+      if (["left", "kicked"].includes(status)) {
+        this.store.setActive(chat.id, false);
+        await notifyLogChannel(
+          this.client,
+          this.store,
+          `➖ Removed from <b>${esc(chat.title || String(chat.id))}</b> (<code>${chat.id}</code>).`,
+        );
+      }
+      return;
+    }
 
     this.store.ensureGroup(chat.id, chat.title ?? "");
     const adder = update.from;
     this.store.log(chat.id, "bot_added", { actorId: adder?.id ?? null });
+    await notifyLogChannel(
+      this.client,
+      this.store,
+      `➕ Added to <b>${esc(chat.title || String(chat.id))}</b> (<code>${chat.id}</code>) by ${adder ? mention(adder) : "unknown"}.`,
+    );
 
     // Super admins activate immediately. Anyone else may claim the free plan.
     if (!adder || !this.permissions.isOwner(adder.id)) {
@@ -155,7 +177,15 @@ export class Bot {
     if (data.startsWith("plan:claim:")) {
       const res = await this.freePlan.claim(chatId, query.from.id);
       await this.client.answerCallbackQuery(query.id, res.text, !res.ok);
-      if (res.ok) await this.client.sendMessage(chatId, esc(res.text));
+      if (res.ok) {
+        await this.client.sendMessage(chatId, esc(res.text));
+        const group = this.store.getGroup(chatId);
+        await notifyLogChannel(
+          this.client,
+          this.store,
+          `✅ Free plan claimed for <b>${esc(group?.title || String(chatId))}</b> by ${mention(query.from)}.`,
+        );
+      }
       return;
     }
 
@@ -177,6 +207,25 @@ export class Bot {
         "Paid plan: coming soon — it will unlock everything above.",
       ];
       return this.client.sendMessage(query.message.chat.id, lines.join("\n"));
+    }
+
+    if (data.startsWith("ow:")) {
+      if (!this.permissions.isOwner(query.from.id)) {
+        return this.client.answerCallbackQuery(query.id, "Owners only.", true);
+      }
+      const result = await this.ownerPanel.handleCallback(query);
+      if (result.alert) return this.client.answerCallbackQuery(query.id, result.alert, true);
+      if (result.prompt) {
+        await this.client.answerCallbackQuery(query.id);
+        return this.client.sendMessage(query.from.id, `${result.prompt}\nSend /cancel to abort.`);
+      }
+      await this.client.answerCallbackQuery(query.id);
+      if (result.view && query.message) {
+        await this.client.editMessageText(query.message.chat.id, query.message.message_id, result.view.text, {
+          reply_markup: result.view.reply_markup,
+        });
+      }
+      return;
     }
 
     if (data === "rules:show") {
@@ -230,13 +279,30 @@ export class Bot {
 
   async onPrivate(message) {
     const text = message.text ?? "";
+
+    // Track who has opened a DM with the bot, and let the owner know about
+    // first-time visitors if they are watching a log channel.
+    if (message.from && this.store.recordDmUser(message.from)) {
+      await notifyLogChannel(
+        this.client,
+        this.store,
+        `🆕 New user started the bot: ${mention(message.from)} (<code>${message.from.id}</code>).`,
+      );
+    }
+
     if (text.startsWith("/owner")) {
       if (!this.permissions.isOwner(message.from.id)) {
         return this.client.sendMessage(message.chat.id, "This command is for bot owners only.");
       }
-      return this.sendOwnerPanel(message.from.id);
+      return this.sendOwnerPanel(message.chat.id);
     }
-    // A pending settings prompt (e.g. "send the banned word") is answered here.
+
+    // The owner's pending prompt (e.g. "send the new /start text") is checked
+    // first, then the per-group panel's prompt (e.g. "send the banned word").
+    if (this.permissions.isOwner(message.from.id)) {
+      const ownerConfirmation = await this.ownerPanel.handleInput(message);
+      if (ownerConfirmation !== null) return this.client.sendMessage(message.chat.id, ownerConfirmation);
+    }
     const confirmation = await this.panel.handleInput(message);
     if (confirmation !== null) return this.client.sendMessage(message.chat.id, confirmation);
     return this.commands.handle(message);
@@ -269,13 +335,9 @@ export class Bot {
     this.store.log(newId, "group_migrated", { detail: `from ${oldId}` });
   }
 
-  async sendOwnerPanel(userId) {
-    const groups = this.store.listGroups();
-    const lines = groups.map((g) => `• ${esc(g.title || "(untitled)")} — <code>${g.chatId}</code>`);
-    const text =
-      `<b>Owner panel</b>\nGroups served: ${this.store.countGroups()}\n\n` +
-      (lines.length ? lines.join("\n") : "No groups yet.");
-    await this.client.sendMessage(userId, text);
+  async sendOwnerPanel(chatId) {
+    const view = this.ownerPanel.render();
+    await this.client.sendMessage(chatId, view.text, { reply_markup: view.reply_markup });
   }
 
   // Starts receiving updates. In webhook mode Telegram pushes updates to the

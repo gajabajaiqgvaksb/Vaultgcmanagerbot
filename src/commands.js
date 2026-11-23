@@ -6,6 +6,24 @@ import { FULL_PERMISSIONS, NO_PERMISSIONS } from "./enforce.js";
 import { esc, mention, parseDuration, parseUserRef, SUBSCRIPTION_SOON } from "./util.js";
 import { FEATURES, lockedFeatures, PAID_PLAN_TEXT } from "./plans.js";
 import { emojiHtml } from "./emoji.js";
+import { notifyLogChannel } from "./logchannel.js";
+
+// Shown in a private chat on /start or /help, unless the owner panel has set
+// a custom one. Editable from the owner panel ("Edit start message"), with
+// the same placeholders as the group welcome text and support for premium emoji.
+export const DEFAULT_START_TEXT =
+  "<b>⚡ VaultGC Manager</b>\n" +
+  "Group moderation, warnings, welcome messages and a subscription — all in one bot.\n\n" +
+  "Add me to a group as an admin (delete, restrict, pin and invite rights), then send /panel there to set it up.";
+
+// Fills {first_name} / {username} in the start text, same placeholders as welcome.
+export function renderStartText(template, user) {
+  const values = {
+    first_name: esc(user.first_name || "there"),
+    username: user.username ? `@${esc(user.username)}` : esc(user.first_name || "there"),
+  };
+  return String(template).replace(/\{(first_name|username)\}/g, (_, k) => values[k]);
+}
 
 // Commands any user may run to claim or check a plan (they check ownership themselves).
 const PLAN_COMMANDS = new Set(["claim", "plan"]);
@@ -70,11 +88,10 @@ export class Commands {
 
     if (name === "start" || name === "help") {
       const me = await this.permissions.me();
+      const template = this.store.getStartText() || DEFAULT_START_TEXT;
       await this.sendDm(
         message,
-        "<b>⚡ VaultGC Manager</b>\n" +
-          "Group moderation, warnings, welcome messages and a subscription — all in one bot.\n\n" +
-          "Add me to a group as an admin (delete, restrict, pin and invite rights), then send /panel there to set it up.",
+        renderStartText(template, message.from),
         {
           reply_markup: {
             inline_keyboard: [
@@ -262,6 +279,13 @@ export class Commands {
     if (!this.freePlan.enabled) return this.reply(message, "The free plan is not available right now.");
     const res = await this.freePlan.claim(message.chat.id, message.from.id);
     await this.reply(message, esc(res.text));
+    if (res.ok) {
+      await notifyLogChannel(
+        this.client,
+        this.store,
+        `✅ Free plan claimed for <b>${esc(message.chat.title || String(message.chat.id))}</b> by ${mention(message.from)}.`,
+      );
+    }
   }
 
   async planCmd(message) {

@@ -15,6 +15,7 @@ export const STATE_TABLES = Object.freeze([
   "logs",
   "claims",
   "meta",
+  "dm_users",
 ]);
 
 const SCHEMA = `
@@ -58,6 +59,12 @@ CREATE TABLE IF NOT EXISTS claims (
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dm_users (
+  user_id    INTEGER PRIMARY KEY,
+  first_name TEXT NOT NULL DEFAULT '',
+  username   TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 `;
 
@@ -107,6 +114,11 @@ export class Store {
       countLogs: db.prepare(
         "SELECT action, COUNT(*) AS n FROM logs WHERE chat_id = ? GROUP BY action ORDER BY n DESC",
       ),
+      insertDmUser: db.prepare(
+        "INSERT OR IGNORE INTO dm_users (user_id, first_name, username) VALUES (?, ?, ?)",
+      ),
+      countDmUsers: db.prepare("SELECT COUNT(*) AS n FROM dm_users"),
+      recentDmUsers: db.prepare("SELECT * FROM dm_users ORDER BY started_at DESC LIMIT ?"),
     };
   }
 
@@ -298,15 +310,47 @@ export class Store {
     }
   }
 
-  getMeta(key) {
+  // Raw string key/value storage. Numeric meta (e.g. the update offset) goes
+  // through getMeta/setMeta below; free-form text (bot-wide messages, a
+  // channel reference) goes through these directly, un-coerced.
+  getMetaRaw(key) {
     const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key);
-    return row ? Number(row.value) : null;
+    return row ? row.value : null;
   }
 
-  setMeta(key, value) {
+  setMetaRaw(key, value) {
     this.db
       .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
       .run(key, String(value));
+  }
+
+  getMeta(key) {
+    const raw = this.getMetaRaw(key);
+    return raw === null ? null : Number(raw);
+  }
+
+  setMeta(key, value) {
+    this.setMetaRaw(key, value);
+  }
+
+  // Bot-wide "/start" message in a private chat, as Telegram HTML (so it can
+  // carry formatting and premium emoji). null means use the built-in default.
+  getStartText() {
+    return this.getMetaRaw("dm_start_text");
+  }
+
+  setStartText(html) {
+    this.setMetaRaw("dm_start_text", html);
+  }
+
+  // Channel the owner wants bot-wide events (new groups, plan claims) posted
+  // to. null means no channel is configured.
+  getLogChannel() {
+    return this.getMetaRaw("log_channel");
+  }
+
+  setLogChannel(ref) {
+    this.setMetaRaw("log_channel", ref);
   }
 
   listGroups() {
@@ -315,5 +359,46 @@ export class Store {
 
   countGroups() {
     return this.stmts.countGroups.get().n;
+  }
+
+  // Counts groups by subscription state, for the owner panel. Excludes the
+  // pseudo-group (chat_id 0) that holds the saved settings template.
+  planCounts() {
+    const rows = this.db.prepare("SELECT settings FROM groups WHERE chat_id != 0").all();
+    let active = 0;
+    let free = 0;
+    for (const row of rows) {
+      const s = JSON.parse(row.settings || "{}");
+      if (s?.subscription?.active) active++;
+      if (s?.subscription?.plan === "free") free++;
+    }
+    return { total: rows.length, active, free };
+  }
+
+  // Most recent log lines across every group, newest first, for the owner panel.
+  recentGlobalLogs(limit = 10) {
+    return this.db
+      .prepare(
+        `SELECT logs.*, groups.title AS group_title FROM logs
+         LEFT JOIN groups ON groups.chat_id = logs.chat_id
+         ORDER BY logs.id DESC LIMIT ?`,
+      )
+      .all(limit);
+  }
+
+  // ---- DM users (people who have started a private chat with the bot) ----
+
+  // Records a user who messaged the bot privately. Returns true the first
+  // time this user is seen, so the caller can post a "new user" notice once.
+  recordDmUser(user) {
+    return this.stmts.insertDmUser.run(user.id, user.first_name || "", user.username || "").changes > 0;
+  }
+
+  countDmUsers() {
+    return this.stmts.countDmUsers.get().n;
+  }
+
+  recentDmUsers(limit = 10) {
+    return this.stmts.recentDmUsers.all(limit);
   }
 }
