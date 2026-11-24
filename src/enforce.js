@@ -54,6 +54,13 @@ export class Enforcer {
     this.store.log(chatId, "ban", { actorId, targetId: userId, detail: reason });
   }
 
+  // A ban Telegram lifts automatically after `minutes`.
+  async tban(chatId, userId, minutes, { actorId = null, reason = "" } = {}) {
+    const until = Math.floor(Date.now() / 1000) + minutes * 60;
+    await this.client.banMember(chatId, userId, until);
+    this.store.log(chatId, "tban", { actorId, targetId: userId, detail: `${minutes}m ${reason}`.trim() });
+  }
+
   async unban(chatId, userId, { actorId = null } = {}) {
     await this.client.unbanMember(chatId, userId);
     this.store.log(chatId, "unban", { actorId, targetId: userId });

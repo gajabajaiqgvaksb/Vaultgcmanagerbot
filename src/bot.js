@@ -354,6 +354,8 @@ export class Bot {
       );
     }
 
+    await this.registerCommands();
+
     if (this.config.mode === "webhook") {
       const url = `${this.config.publicUrl}/telegram`;
       await this.client.setWebhook(url, this.config.webhookSecret);
@@ -365,6 +367,56 @@ export class Bot {
     await this.client.deleteWebhook();
     console.log(`Connected as @${me.username} (${me.id}). Polling for updates...`);
     return this.poll();
+  }
+
+  // Fills Telegram's "/" command menu (the button to the left of the message
+  // box). Members and admins see different lists; private chat gets its own.
+  async registerCommands() {
+    const member = [
+      { command: "rules", description: "Show this group's rules" },
+      { command: "id", description: "Show your ID and this chat's ID" },
+      { command: "admins", description: "List this group's admins" },
+      { command: "report", description: "Reply to a message to alert the admins" },
+    ];
+    const admin = [
+      ...member,
+      { command: "panel", description: "Open the admin settings" },
+      { command: "status", description: "Check activation and bot rights" },
+      { command: "info", description: "Show info about a user" },
+      { command: "ban", description: "Ban a user" },
+      { command: "unban", description: "Unban a user" },
+      { command: "tban", description: "Temporarily ban a user" },
+      { command: "kick", description: "Kick a user" },
+      { command: "mute", description: "Mute a user" },
+      { command: "unmute", description: "Unmute a user" },
+      { command: "warn", description: "Warn a user" },
+      { command: "unwarn", description: "Remove one warning" },
+      { command: "warnings", description: "Show a user's warning count" },
+      { command: "purge", description: "Delete a range of messages" },
+      { command: "del", description: "Delete the replied message" },
+      { command: "lock", description: "Restrict the chat to admins" },
+      { command: "unlock", description: "Allow members to post again" },
+      { command: "pin", description: "Pin the replied message" },
+      { command: "unpin", description: "Unpin the replied message" },
+      { command: "promote", description: "Promote a user to admin" },
+      { command: "demote", description: "Demote an admin" },
+      { command: "setrules", description: "Set this group's rules" },
+      { command: "plan", description: "Show this group's plan" },
+      { command: "claim", description: "Claim the free plan" },
+    ];
+    const dm = [
+      { command: "start", description: "Get started" },
+      { command: "help", description: "How to use this bot" },
+      { command: "panel", description: "List the groups you manage" },
+      { command: "owner", description: "Owner panel (super admins)" },
+    ];
+    const set = (commands, scope) =>
+      this.client.setMyCommands(commands, scope).catch((err) => console.error("setMyCommands failed:", err.message));
+    await Promise.all([
+      set(dm, { type: "all_private_chats" }),
+      set(member, { type: "all_group_chats" }),
+      set(admin, { type: "all_chat_administrators" }),
+    ]);
   }
 
   async poll() {

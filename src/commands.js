@@ -31,7 +31,7 @@ const PLAN_COMMANDS = new Set(["claim", "plan"]);
 const MAX_PURGE = 100;
 
 // Commands any member may use. Everything else is admin-only.
-const PUBLIC_COMMANDS = new Set(["help", "id", "rules"]);
+const PUBLIC_COMMANDS = new Set(["help", "id", "rules", "admins", "report"]);
 
 export class Commands {
   constructor({ client, store, permissions, enforcer, panel, freePlan }) {
@@ -159,6 +159,7 @@ export class Commands {
       deactivate: (m) => this.setActive(m, false),
       ban: (m, a) => this.targetAction(m, a, "ban"),
       unban: (m, a) => this.targetAction(m, a, "unban"),
+      tban: (m, a) => this.tbanCmd(m, a),
       kick: (m, a) => this.targetAction(m, a, "kick"),
       mute: (m, a) => this.muteCmd(m, a),
       unmute: (m, a) => this.targetAction(m, a, "unmute"),
@@ -166,8 +167,11 @@ export class Commands {
       unwarn: (m, a) => this.unwarnCmd(m, a),
       warnings: (m, a) => this.warningsCmd(m, a),
       purge: (m) => this.purgeCmd(m),
+      del: (m) => this.delCmd(m),
       id: (m) => this.idCmd(m),
       info: (m, a) => this.infoCmd(m, a),
+      admins: (m) => this.adminsCmd(m),
+      report: (m) => this.reportCmd(m),
       rules: (m) => this.rulesCmd(m),
       setrules: (m, a) => this.setRulesCmd(m, a),
       lock: (m) => this.lockCmd(m, true),
@@ -344,6 +348,20 @@ export class Commands {
     await this.reply(message, `${icon} ${mention(user)} muted for ${minutes} minute(s).`, { parse_mode: "HTML" });
   }
 
+  async tbanCmd(message, args) {
+    const resolved = await this.resolveTarget(message, args);
+    if (!resolved) return;
+    const { user, rest } = resolved;
+    if (!(await this.guardTarget(message, user))) return;
+    const [durToken, ...reasonParts] = rest.split(/\s+/).filter(Boolean);
+    const minutes = parseDuration(durToken ?? "");
+    if (minutes === null) return this.reply(message, "Usage: /tban <reply or user ID> <duration e.g. 30m, 2h, 1d> [reason]");
+    const reason = reasonParts.join(" ");
+    await this.enforcer.tban(message.chat.id, user.id, minutes, { actorId: message.from.id, reason });
+    const icon = emojiHtml("ban", this.store.getSettings(message.chat.id).emoji);
+    await this.reply(message, `${icon} ${mention(user)} banned for ${minutes} minute(s).`, { parse_mode: "HTML" });
+  }
+
   async warnCmd(message, args) {
     const resolved = await this.resolveTarget(message, args);
     if (!resolved) return;
@@ -391,6 +409,16 @@ export class Commands {
     setTimeout(() => this.client.deleteMessage(message.chat.id, note.message_id), 5000).unref?.();
   }
 
+  async delCmd(message) {
+    const rights = await this.permissions.botRights(message.chat.id);
+    if (!rights?.canDelete) return this.reply(message, "I need the delete messages right to do that.");
+    const target = message.reply_to_message?.message_id;
+    if (!target) return this.reply(message, "Reply to the message you want deleted.");
+    await this.client.deleteMessage(message.chat.id, target);
+    await this.client.deleteMessage(message.chat.id, message.message_id);
+    this.store.log(message.chat.id, "del", { actorId: message.from.id });
+  }
+
   async idCmd(message) {
     const lines = [`Chat ID: <code>${message.chat.id}</code>`, `Your ID: <code>${message.from.id}</code>`];
     if (message.reply_to_message?.from) {
@@ -420,6 +448,35 @@ export class Commands {
       ].join("\n"),
       { parse_mode: "HTML" },
     );
+  }
+
+  async getAdmins(chatId) {
+    const admins = await this.client.getChatAdministrators(chatId).catch(() => []);
+    return Array.isArray(admins) ? admins : [];
+  }
+
+  async adminsCmd(message) {
+    const admins = await this.getAdmins(message.chat.id);
+    const lines = admins
+      .filter((a) => !a.user.is_bot)
+      .map((a) => `• ${mention(a.user)}${a.status === "creator" ? " (owner)" : ""}`);
+    await this.reply(message, `<b>Group admins</b>\n${lines.length ? lines.join("\n") : "No admins found."}`, { parse_mode: "HTML" });
+  }
+
+  async reportCmd(message) {
+    const target = message.reply_to_message;
+    if (!target) return this.reply(message, "Reply to the message you want to report, with /report.");
+    const admins = await this.getAdmins(message.chat.id);
+    const tags = admins
+      .filter((a) => !a.user.is_bot && a.user.id !== message.from.id)
+      .map((a) => mention(a.user))
+      .join(" ");
+    await this.client.sendMessage(
+      message.chat.id,
+      `⚠ ${mention(message.from)} reported a message.${tags ? `\n${tags}` : ""}`,
+      { reply_to_message_id: target.message_id, allow_sending_without_reply: true },
+    );
+    this.store.log(message.chat.id, "report", { actorId: message.from.id, targetId: target.from?.id });
   }
 
   async rulesCmd(message) {
@@ -492,8 +549,10 @@ export class Commands {
 const HELP_TEXT = [
   "<b>Admin commands</b>",
   "/ban /unban /kick /mute [dur] /unmute — reply or pass a user ID",
+  "/tban &lt;dur&gt; — temporary ban, e.g. /tban 2h spamming",
   "/warn [reason] /unwarn /warnings",
   "/purge — reply to the oldest message to purge",
+  "/del — reply to delete just that message",
   "/lock /unlock — restrict or allow chat messages",
   "/pin /unpin — reply to a message",
   "/promote /demote — reply or pass a user ID",
@@ -502,6 +561,10 @@ const HELP_TEXT = [
   "/panel — open settings in a private chat with me",
   "/status — check activation, rights and privacy mode (super admins)",
   "/plan — plan status · /claim — claim the free plan (group owner)",
+  "",
+  "<b>For everyone</b>",
+  "/rules /id /admins — list this group's admins",
+  "/report — reply to a message to alert the admins",
 ].join("\n");
 
 function friendly(err) {

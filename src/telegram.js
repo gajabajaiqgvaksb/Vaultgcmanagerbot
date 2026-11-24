@@ -105,8 +105,9 @@ export class TelegramClient {
     });
   }
 
-  banMember(chatId, userId) {
-    return this.call("banChatMember", { chat_id: chatId, user_id: userId });
+  banMember(chatId, userId, untilDate) {
+    // until_date makes this a temporary ban: Telegram auto-lifts it at that time.
+    return this.call("banChatMember", { chat_id: chatId, user_id: userId, ...(untilDate ? { until_date: untilDate } : {}) });
   }
 
   unbanMember(chatId, userId) {
@@ -177,6 +178,11 @@ export class TelegramClient {
 
   getMe() {
     return this.call("getMe");
+  }
+
+  // Populates the "/" command menu Telegram shows next to the message box.
+  setMyCommands(commands, scope) {
+    return this.call("setMyCommands", { commands, ...(scope ? { scope } : {}) });
   }
 }
 

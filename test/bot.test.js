@@ -32,6 +32,11 @@ function fakeTelegram({ memberStatus = {} } = {}) {
         }
         return ok({ status: "member", user: { id: uid, first_name: "x" } });
       }
+      case "getChatAdministrators":
+        return ok([
+          { status: "creator", user: { id: SUPER, first_name: "Boss" } },
+          { status: "administrator", user: { id: BOT_ID, first_name: "vaultbot", is_bot: true } },
+        ]);
       case "sendMessage":
         return ok({ message_id: nextMsgId++ });
       default:
@@ -523,4 +528,69 @@ test("the Subscription button explains the free plan and the admin-only rule", a
   });
 
   assert.match(lastSent(tg).params.text, /admin of the group can activate/);
+});
+
+test("/tban temporarily bans a user with an until_date", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(
+    msg({ id: SUPER, first_name: "Boss" }, "/tban 2h spam", {
+      reply_to_message: { from: { id: SPAMMER, first_name: "Spam" }, message_id: 9 },
+    }),
+  );
+
+  const ban = tg.calls.filter((c) => c.method === "banChatMember").pop();
+  assert.equal(ban.params.user_id, SPAMMER);
+  assert.ok(ban.params.until_date > Date.now() / 1000, "until_date is in the future");
+  assert.match(lastSent(tg).params.text, /banned for 120 minute/);
+});
+
+test("/admins lists the group's admins (bots excluded)", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/admins"));
+
+  assert.match(lastSent(tg).params.text, /Group admins/);
+  assert.match(lastSent(tg).params.text, /Boss/);
+  assert.equal(/vaultbot/.test(lastSent(tg).params.text), false, "the bot itself is excluded");
+});
+
+test("/report tags the admins on the replied message, available to any member", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SPAMMER, first_name: "Member" }, "/report", {
+    reply_to_message: { message_id: 42, from: { id: 55, first_name: "Jerk" } },
+  }));
+
+  const sent = lastSent(tg).params;
+  assert.equal(sent.reply_to_message_id, 42);
+  assert.match(sent.text, /reported a message/);
+  assert.match(sent.text, /Boss/);
+});
+
+test("/del removes the replied message and the command itself", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.handleUpdate(msg({ id: SUPER, first_name: "Boss" }, "/del", {
+    reply_to_message: { message_id: 42, from: { id: SPAMMER } },
+  }));
+
+  const deletes = tg.calls.filter((c) => c.method === "deleteMessage").map((c) => c.params.message_id);
+  assert.ok(deletes.includes(42), "the reported message is deleted");
+});
+
+test("the command menu is registered for private chats, members and admins", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+
+  await bot.registerCommands();
+
+  const setCalls = tg.calls.filter((c) => c.method === "setMyCommands");
+  assert.equal(setCalls.length, 3);
+  const scopes = setCalls.map((c) => c.params.scope.type).sort();
+  assert.deepEqual(scopes, ["all_chat_administrators", "all_group_chats", "all_private_chats"]);
 });
