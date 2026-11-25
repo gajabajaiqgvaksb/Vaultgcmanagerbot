@@ -478,6 +478,76 @@ test("welcome stays off until explicitly enabled, even once a group is active", 
   assert.equal(tg.calls.some((c) => c.method === "sendMessage" && /Quiet/.test(c.params.text ?? "")), false);
 });
 
+test("welcome also fires from a chat_member update (Telegram often skips the join service message)", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.welcome.enabled = true;
+  bot.store.saveSettings(group.id, s);
+
+  await bot.handleUpdate({
+    update_id: 95,
+    chat_member: {
+      chat: group,
+      from: { id: 55, first_name: "Someone" },
+      old_chat_member: { status: "left", user: { id: 55, first_name: "Someone" } },
+      new_chat_member: { status: "member", user: { id: 55, first_name: "Someone" } },
+    },
+  });
+
+  const welcomeMsg = lastSent(tg);
+  assert.match(welcomeMsg.params.text, /Someone/);
+});
+
+test("chat_member for someone who was already a member (e.g. promoted) is not a join, no welcome", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.welcome.enabled = true;
+  bot.store.saveSettings(group.id, s);
+
+  await bot.handleUpdate({
+    update_id: 96,
+    chat_member: {
+      chat: group,
+      from: { id: 56, first_name: "Promoted" },
+      old_chat_member: { status: "member", user: { id: 56, first_name: "Promoted" } },
+      new_chat_member: { status: "administrator", user: { id: 56, first_name: "Promoted" } },
+    },
+  });
+
+  assert.equal(tg.calls.some((c) => c.method === "sendMessage" && /Promoted/.test(c.params.text ?? "")), false);
+});
+
+test("a join reported by both new_chat_members and chat_member only welcomes once", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.welcome.enabled = true;
+  bot.store.saveSettings(group.id, s);
+
+  await bot.handleUpdate({
+    update_id: 97,
+    chat_member: {
+      chat: group,
+      from: { id: 57, first_name: "Dup" },
+      old_chat_member: { status: "left", user: { id: 57, first_name: "Dup" } },
+      new_chat_member: { status: "member", user: { id: 57, first_name: "Dup" } },
+    },
+  });
+  await bot.handleUpdate({
+    update_id: 98,
+    message: {
+      message_id: 22,
+      chat: group,
+      new_chat_members: [{ id: 57, first_name: "Dup", is_bot: false }],
+    },
+  });
+
+  const welcomes = tg.calls.filter((c) => c.method === "sendMessage" && /Dup/.test(c.params.text ?? ""));
+  assert.equal(welcomes.length, 1);
+});
+
 test("/start in a private chat shows an Add-to-group, My groups, and Subscription button", async () => {
   const tg = fakeTelegram();
   const bot = makeBot(tg);

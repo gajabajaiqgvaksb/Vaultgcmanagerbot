@@ -34,6 +34,10 @@ export class Bot {
   constructor(deps) {
     Object.assign(this, deps);
     this.counters = { updates: 0, lastUpdateAt: null, botUsername: null };
+    // Joins can arrive twice (a new_chat_members service message AND a
+    // chat_member update for the same join). Short TTL dedupe so a member
+    // only ever gets one welcome.
+    this.recentlyWelcomed = new Map();
   }
 
   stats() {
@@ -51,6 +55,7 @@ export class Bot {
     this.counters.lastUpdateAt = Date.now();
     try {
       if (update.my_chat_member) return await this.onMyChatMember(update.my_chat_member);
+      if (update.chat_member) return await this.onChatMember(update.chat_member);
       if (update.callback_query) return await this.onCallback(update.callback_query);
       if (update.message) return await this.onMessage(update.message);
     } catch (err) {
@@ -249,9 +254,12 @@ export class Bot {
       return;
     }
 
-    // Member joins: welcome them if enabled.
+    // Member joins: welcome them if enabled. In larger/open groups Telegram
+    // frequently drops this service message, so chat_member (below) is the
+    // reliable path and this is a best-effort fast path when it does arrive.
     if (message.new_chat_members?.length) {
-      await this.welcome(message);
+      const fresh = message.new_chat_members.filter((u) => this.shouldWelcome(message.chat.id, u.id));
+      if (fresh.length) await this.welcomeUsers(message.chat.id, fresh);
       return;
     }
     if (message.left_chat_member || message.new_chat_title) {
@@ -308,14 +316,52 @@ export class Bot {
     return this.commands.handle(message);
   }
 
-  async welcome(message) {
-    const chatId = message.chat.id;
+  // chat_member fires for every membership change (join, leave, promotion,
+  // restriction lift). The bot must be a group admin to receive these for
+  // other users. We only care about a transition into actual membership.
+  async onChatMember(update) {
+    const chat = update.chat;
+    if (chat.type === "private") return;
+    const user = update.new_chat_member?.user;
+    if (!user || user.is_bot) return;
+
+    const wasIn = this.isMemberStatus(update.old_chat_member);
+    const isIn = this.isMemberStatus(update.new_chat_member);
+    if (wasIn || !isIn) return; // not a fresh join
+
+    if (!this.shouldWelcome(chat.id, user.id)) return;
+    await this.welcomeUsers(chat.id, [user]);
+  }
+
+  isMemberStatus(chatMember) {
+    if (!chatMember) return false;
+    if (["member", "administrator", "creator"].includes(chatMember.status)) return true;
+    return chatMember.status === "restricted" && chatMember.is_member === true;
+  }
+
+  // Dedupe so a join reported by both new_chat_members and chat_member only
+  // triggers one welcome message.
+  shouldWelcome(chatId, userId) {
+    const key = `${chatId}:${userId}`;
+    const now = Date.now();
+    const last = this.recentlyWelcomed.get(key);
+    if (last && now - last < 60_000) return false;
+    this.recentlyWelcomed.set(key, now);
+    if (this.recentlyWelcomed.size > 2000) {
+      for (const [k, t] of this.recentlyWelcomed) {
+        if (now - t > 60_000) this.recentlyWelcomed.delete(k);
+      }
+    }
+    return true;
+  }
+
+  async welcomeUsers(chatId, users) {
     if (!this.store.isActive(chatId)) return;
     const settings = this.store.getSettings(chatId);
     if (!settings.welcome.enabled) return;
     const group = this.store.getGroup(chatId);
     const icon = emojiHtml("welcome", settings.emoji);
-    for (const user of message.new_chat_members) {
+    for (const user of users) {
       if (user.is_bot) continue;
       const text = renderWelcome(settings.welcome.text, { user, groupTitle: group?.title });
       await this.client.sendMessage(chatId, `${icon} ${text}`, {

@@ -167,7 +167,11 @@ export class TelegramClient {
     return this.call("setWebhook", {
       url,
       secret_token: secretToken,
-      allowed_updates: ["message", "callback_query", "my_chat_member"],
+      // chat_member is required too: in larger/open groups Telegram often
+      // skips the "X joined the group" service message entirely, so joins
+      // are only caught via chat_member updates (requires the bot to be an
+      // admin in that chat).
+      allowed_updates: ["message", "callback_query", "my_chat_member", "chat_member"],
       drop_pending_updates: false,
     });
   }
