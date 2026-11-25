@@ -664,3 +664,35 @@ test("the command menu is registered for private chats, members and admins", asy
   const scopes = setCalls.map((c) => c.params.scope.type).sort();
   assert.deepEqual(scopes, ["all_chat_administrators", "all_group_chats", "all_private_chats"]);
 });
+
+test("a restricted user who is a member again (lifted restriction) is not welcomed twice", async () => {
+  const tg = fakeTelegram();
+  const bot = makeBot(tg);
+  const s = bot.store.getSettings(group.id);
+  s.welcome.enabled = true;
+  bot.store.saveSettings(group.id, s);
+
+  // Already a member, restriction lifted: wasIn is true, so no welcome.
+  await bot.handleUpdate({
+    update_id: 99,
+    chat_member: {
+      chat: group,
+      from: { id: 58, first_name: "Lifted" },
+      old_chat_member: { status: "restricted", is_member: true, user: { id: 58, first_name: "Lifted" } },
+      new_chat_member: { status: "member", user: { id: 58, first_name: "Lifted" } },
+    },
+  });
+  assert.equal(tg.calls.some((c) => c.method === "sendMessage" && /Lifted/.test(c.params.text ?? "")), false);
+
+  // A restricted user rejoining (is_member true) from left is a join.
+  await bot.handleUpdate({
+    update_id: 100,
+    chat_member: {
+      chat: group,
+      from: { id: 59, first_name: "Back" },
+      old_chat_member: { status: "left", user: { id: 59, first_name: "Back" } },
+      new_chat_member: { status: "restricted", is_member: true, user: { id: 59, first_name: "Back" } },
+    },
+  });
+  assert.match(lastSent(tg).params.text, /Back/);
+});
